@@ -1,0 +1,149 @@
+import { createServerFn } from '@tanstack/react-start'
+import { z } from 'zod'
+import { db } from '../db'
+import { products, productFamilies, auditLog } from '../db/schema'
+import { eq, and, like, desc } from 'drizzle-orm'
+
+// ── List Products ──
+
+export const getProducts = createServerFn({ method: 'GET' })
+  .validator(z.object({
+    familyCode: z.string().optional(),
+    country: z.string().default('SE'),
+    search: z.string().optional(),
+    activeOnly: z.boolean().default(true),
+  }).optional())
+  .handler(async ({ data }) => {
+    const filters = data ?? {}
+    const conditions = []
+
+    if (filters.country) conditions.push(eq(products.country, filters.country))
+    if (filters.familyCode) conditions.push(eq(products.familyCode, filters.familyCode))
+    if (filters.activeOnly) conditions.push(eq(products.isActive, true))
+    if (filters.search) conditions.push(like(products.displayName, `%${filters.search}%`))
+
+    const result = await db.select().from(products)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(products.familyCode, products.bandwidth)
+
+    return result
+  })
+
+// ── Get Single Product ──
+
+export const getProduct = createServerFn({ method: 'GET' })
+  .validator(z.object({ id: z.number() }))
+  .handler(async ({ data }) => {
+    return db.select().from(products).where(eq(products.id, data.id)).get()
+  })
+
+// ── Create Product ──
+
+const CreateProductInput = z.object({
+  country: z.string().default('SE'),
+  familyId: z.number().optional(),
+  familyCode: z.string(),
+  displayName: z.string(),
+  priceToolCode: z.string(),
+  accessType: z.string().optional(),
+  lookupKey: z.string(),
+  zoneType: z.number().optional(),
+  bandwidth: z.number().optional(),
+  listPriceOneTime: z.number().default(0),
+  listPriceMonthly: z.number().default(0),
+  defaultAccessOneTime: z.number().default(0),
+  defaultAccessMonthly: z.number().default(0),
+  cogsOneTime: z.number().default(0),
+  cogsAnnual: z.number().default(0),
+  cpeInstallation: z.number().default(0),
+  cpeCapex: z.number().default(0),
+  siteInstallation: z.number().default(0),
+  siteCapex: z.number().default(0),
+  backboneCostAnnual: z.number().default(0),
+  gtCostAnnual: z.number().default(0),
+  opexOneTime: z.number().default(0),
+  opexAnnual: z.number().default(0),
+  breakpointAccessOneTime: z.number().default(0),
+  breakpointAccessAnnual: z.number().default(0),
+  marginalSurcharge: z.number().default(0),
+  isAddonService: z.boolean().default(false),
+})
+
+export const createProduct = createServerFn({ method: 'POST' })
+  .validator(CreateProductInput)
+  .handler(async ({ data }) => {
+    const result = await db.insert(products).values(data).returning()
+    const created = result[0]
+
+    await db.insert(auditLog).values({
+      tableName: 'products',
+      recordId: created.id,
+      action: 'create',
+      newValue: JSON.stringify(data),
+    })
+
+    return created
+  })
+
+// ── Update Product ──
+
+export const updateProduct = createServerFn({ method: 'POST' })
+  .validator(z.object({
+    id: z.number(),
+    updates: z.record(z.string(), z.union([z.number(), z.string(), z.boolean(), z.null()])),
+  }))
+  .handler(async ({ data }) => {
+    const existing = await db.select().from(products).where(eq(products.id, data.id)).get()
+    if (!existing) throw new Error('Product not found')
+
+    await db.update(products)
+      .set({ ...data.updates, updatedAt: new Date().toISOString() })
+      .where(eq(products.id, data.id))
+
+    await db.insert(auditLog).values({
+      tableName: 'products',
+      recordId: data.id,
+      action: 'update',
+      oldValue: JSON.stringify(existing),
+      newValue: JSON.stringify(data.updates),
+    })
+
+    return db.select().from(products).where(eq(products.id, data.id)).get()
+  })
+
+// ── Delete Product (soft) ──
+
+export const deleteProduct = createServerFn({ method: 'POST' })
+  .validator(z.object({ id: z.number() }))
+  .handler(async ({ data }) => {
+    await db.update(products)
+      .set({ isActive: false, updatedAt: new Date().toISOString() })
+      .where(eq(products.id, data.id))
+
+    await db.insert(auditLog).values({
+      tableName: 'products',
+      recordId: data.id,
+      action: 'delete',
+    })
+
+    return { success: true }
+  })
+
+// ── Product Families ──
+
+export const getProductFamilies = createServerFn({ method: 'GET' })
+  .handler(async () => {
+    return db.select().from(productFamilies).where(eq(productFamilies.isActive, true))
+  })
+
+export const createProductFamily = createServerFn({ method: 'POST' })
+  .validator(z.object({
+    code: z.string(),
+    name: z.string(),
+    category: z.string(),
+    country: z.string().default('SE'),
+  }))
+  .handler(async ({ data }) => {
+    const result = await db.insert(productFamilies).values(data).returning()
+    return result[0]
+  })
