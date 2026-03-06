@@ -16,11 +16,10 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # copy build output
-COPY --from=builder /app/.output .output
+COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules node_modules
 COPY --from=builder /app/package.json .
 COPY --from=builder /app/drizzle.config.ts drizzle.config.ts
-COPY --from=builder /app/src/server/db/migrations ./src/server/db/migrations
 
 COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh
