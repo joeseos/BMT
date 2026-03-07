@@ -21,7 +21,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # copy build output
-COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/.output .output
 COPY --from=builder /app/node_modules node_modules
 COPY --from=builder /app/package.json .
 COPY --from=builder /app/drizzle.config.ts drizzle.config.ts
