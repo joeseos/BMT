@@ -1,6 +1,9 @@
 #!/bin/sh
 set -e
 
+echo "Running migrations..."
+node scripts/migrate.mjs
+
 echo "Running database seed..."
 node scripts/seed.mjs
 
