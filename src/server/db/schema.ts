@@ -8,7 +8,7 @@ export const productFamilies = sqliteTable('product_families', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   code: text('code').notNull().unique(),
   name: text('name').notNull(),
-  category: text('category').notNull(), // "internet_connect" | "nordic_connect" | "colocation" | "mss"
+  category: text('category').notNull(), // e.g. "network_services"
   country: text('country').notNull().default('SE'),
   isActive: integer('is_active', { mode: 'boolean' }).default(true),
   createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
@@ -29,6 +29,7 @@ export const products = sqliteTable('products', {
 
   // Classification
   zoneType: integer('zone_type'), // 1 = xDSL ≤10M, 2 = Fiber ≥10M
+  hasBandwidth: integer('has_bandwidth', { mode: 'boolean' }).default(false),
   bandwidth: integer('bandwidth'), // Mbit/s
 
   // List prices
@@ -169,6 +170,22 @@ export const productHardware = sqliteTable('product_hardware', {
 }, (table) => [
   index('idx_product_hardware_product').on(table.productId),
   index('idx_product_hardware_hw').on(table.hardwareId),
+])
+
+// ═══════════════════════════════════════════════
+// PRODUCT COST PARAMETERS (flexible cost line items)
+// ═══════════════════════════════════════════════
+
+export const productCostParams = sqliteTable('product_cost_params', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  productId: integer('product_id').notNull().references(() => products.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  amount: real('amount').notNull().default(0),
+  frequency: text('frequency').notNull(), // "one_time" | "monthly"
+  costType: text('cost_type').notNull(), // "COGS" | "CAPEX" | "OPEX"
+  currency: text('currency').notNull().default('SEK'),
+}, (table) => [
+  index('idx_product_cost_params_product').on(table.productId),
 ])
 
 // ═══════════════════════════════════════════════
@@ -324,6 +341,9 @@ export const priceListVersions = sqliteTable('price_list_versions', {
   createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
 })
 
+// ── Constants ──
+export const AVAILABLE_SPEEDS = [10, 100, 200, 400, 600, 1000, 2000] as const
+
 // ── Inferred Types ──
 export type Product = typeof products.$inferSelect
 export type ProductInsert = typeof products.$inferInsert
@@ -337,3 +357,5 @@ export type DealLine = typeof dealLines.$inferSelect
 export type DealLineAddon = typeof dealLineAddons.$inferSelect
 export type ApprovalRule = typeof approvalRules.$inferSelect
 export type ApprovalLogEntry = typeof approvalLog.$inferSelect
+export type ProductCostParam = typeof productCostParams.$inferSelect
+export type ProductCostParamInsert = typeof productCostParams.$inferInsert

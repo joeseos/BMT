@@ -1,7 +1,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { db } from '../db'
-import { products, productFamilies, productAddons, productHardware, equipmentCosts, auditLog } from '../db/schema'
+import { products, productFamilies, productAddons, productHardware, equipmentCosts, productCostParams, auditLog } from '../db/schema'
 import { eq, and, like, desc, SQL } from 'drizzle-orm'
 
 // ── List Products ──
@@ -52,6 +52,7 @@ const CreateProductInput = z.object({
   accessType: z.string().optional(),
   lookupKey: z.string(),
   zoneType: z.number().optional(),
+  hasBandwidth: z.boolean().default(false),
   bandwidth: z.number().optional(),
   listPriceOneTime: z.number().default(0),
   listPriceMonthly: z.number().default(0),
@@ -182,7 +183,10 @@ export const getProductWithRelations = createServerFn({ method: 'GET' })
       })
     )
 
-    return { product, addons: addonProducts, hardware: hardwareItems }
+    const costParams = await db.select().from(productCostParams)
+      .where(eq(productCostParams.productId, data.id))
+
+    return { product, addons: addonProducts, hardware: hardwareItems, costParams }
   })
 
 export const linkAddonToProduct = createServerFn({ method: 'POST' })
@@ -304,4 +308,46 @@ export const deleteHardware = createServerFn({ method: 'POST' })
       action: 'delete',
     })
     return { success: true }
+  })
+
+// ── Product Cost Parameters ──
+
+export const getProductCostParams = createServerFn({ method: 'GET' })
+  .inputValidator(z.object({ productId: z.number() }))
+  .handler(async ({ data }) => {
+    return db.select().from(productCostParams)
+      .where(eq(productCostParams.productId, data.productId))
+  })
+
+export const saveProductCostParams = createServerFn({ method: 'POST' })
+  .inputValidator(z.object({
+    productId: z.number(),
+    params: z.array(z.object({
+      id: z.number().optional(),
+      name: z.string(),
+      amount: z.number(),
+      frequency: z.enum(['one_time', 'monthly']),
+      costType: z.enum(['COGS', 'CAPEX', 'OPEX']),
+      currency: z.string().default('SEK'),
+    })),
+  }))
+  .handler(async ({ data }) => {
+    // Replace all cost params for this product
+    await db.delete(productCostParams).where(eq(productCostParams.productId, data.productId))
+
+    if (data.params.length > 0) {
+      await db.insert(productCostParams).values(
+        data.params.map((p) => ({
+          productId: data.productId,
+          name: p.name,
+          amount: p.amount,
+          frequency: p.frequency,
+          costType: p.costType,
+          currency: p.currency,
+        }))
+      )
+    }
+
+    return db.select().from(productCostParams)
+      .where(eq(productCostParams.productId, data.productId))
   })
