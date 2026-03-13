@@ -1,6 +1,6 @@
 # Pricing Tool
 
-A B2B telecom service pricing and profitability calculator, migrated from an Excel-based tool to a full-stack web application.
+A B2B telecom service pricing and profitability calculator.
 
 ## Stack
 
