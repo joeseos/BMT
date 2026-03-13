@@ -96,6 +96,7 @@ const insertFamily = db.prepare(`
 `)
 
 const families = [
+  ['NS', 'Network Services', 'network_services'],
   ['5GBBB', '5G Bredband Bas', 'internet_connect'],
   ['ICSR', 'Internet Connect Symmetric Router', 'internet_connect'],
   ['ICSC', 'Internet Connect Symmetric CPE', 'internet_connect'],
