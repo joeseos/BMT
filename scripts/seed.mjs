@@ -97,15 +97,6 @@ const insertFamily = db.prepare(`
 
 const families = [
   ['NS', 'Network Services', 'network_services'],
-  ['5GBBB', '5G Bredband Bas', 'internet_connect'],
-  ['ICSR', 'Internet Connect Symmetric Router', 'internet_connect'],
-  ['ICSC', 'Internet Connect Symmetric CPE', 'internet_connect'],
-  ['NCMC', 'Nordic Connect Managed CPE', 'nordic_connect'],
-  ['NCMR', 'Nordic Connect Managed Router', 'nordic_connect'],
-  ['NCP', 'Nordic Connect Partner', 'nordic_connect'],
-  ['NCO', 'Nordic Connect Options', 'nordic_connect'],
-  ['COLO', 'Colocation', 'colocation'],
-  ['MSS', 'Managed Security Services', 'mss'],
 ]
 
 const insertFamiliesMany = db.transaction((entries) => {
