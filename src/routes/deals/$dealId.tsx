@@ -4,6 +4,7 @@ import { getDeal, addDealLine, deleteDealLine } from '~/server/functions/deals'
 import { getProducts, getProductWithRelations } from '~/server/functions/products'
 import { calculateSitePrice } from '~/server/functions/pricing-engine'
 import { formatSEK, formatPercent, getStatusColor, getPaybackColor } from '~/lib/pricing-types'
+import { AVAILABLE_SPEEDS } from '~/server/db/schema'
 import type { Product, DealLineAddon, ProductAddon, ProductHardwareLink, EquipmentCost } from '~/server/db/schema'
 
 export const Route = createFileRoute('/deals/$dealId')({
@@ -235,6 +236,7 @@ function AddLineModal({
   const [productRelations, setProductRelations] = useState<{ addons: (ProductAddon & { addon: Product | undefined })[]; hardware: (ProductHardwareLink & { hardware: EquipmentCost | undefined })[] } | null>(null)
   const [selectedAddons, setSelectedAddons] = useState<Map<number, number>>(new Map())
   const [selectedHardware, setSelectedHardware] = useState<Map<number, number>>(new Map())
+  const [selectedSpeed, setSelectedSpeed] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const [lineForm, setLineForm] = useState({
     address: '',
@@ -255,6 +257,8 @@ function AddLineModal({
 
   async function selectProduct(productId: number) {
     setSelectedProductId(productId)
+    const product = allProducts.find((p) => p.id === productId)
+    setSelectedSpeed(product?.hasBandwidth ? (product.bandwidth ?? null) : null)
     const relations = await getProductWithRelations({ data: { id: productId } })
     setProductRelations(relations)
 
@@ -336,7 +340,7 @@ function AddLineModal({
           country: lineForm.country,
           productId: selectedProductId,
           serviceName: product?.displayName,
-          capacity: product?.bandwidth ?? undefined,
+          capacity: product?.hasBandwidth ? (selectedSpeed ?? undefined) : undefined,
           accessType: product?.accessType ?? undefined,
           quantity: lineForm.quantity,
           accessCostOneTime: lineForm.accessCostOneTime,
@@ -420,6 +424,23 @@ function AddLineModal({
             <p className="text-sm text-gray-700">
               Product: <span className="font-medium">{allProducts.find((p) => p.id === selectedProductId)?.displayName}</span>
             </p>
+
+            {/* Speed selector for bandwidth products */}
+            {allProducts.find((p) => p.id === selectedProductId)?.hasBandwidth && (
+              <div>
+                <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Speed (Mbit)</label>
+                <select
+                  value={selectedSpeed ?? ''}
+                  onChange={(e) => setSelectedSpeed(e.target.value === '' ? null : Number(e.target.value))}
+                  className="px-2 py-1.5 border border-gray-300 rounded text-sm"
+                >
+                  <option value="">Select speed...</option>
+                  {AVAILABLE_SPEEDS.map((s) => (
+                    <option key={s} value={s}>{s} Mbit</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* Addon selection */}
             {productRelations && productRelations.addons.length > 0 && (

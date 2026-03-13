@@ -5,8 +5,13 @@ import {
   getHardwareCatalog, createHardware, updateHardware, deleteHardware,
   getProductWithRelations, linkAddonToProduct, unlinkAddonFromProduct,
   linkHardwareToProduct, unlinkHardwareFromProduct,
+  getProductCostParams, saveProductCostParams,
 } from '~/server/functions/products'
-import type { Product, ProductFamily, EquipmentCost, ProductAddon, ProductHardwareLink } from '~/server/db/schema'
+import { AVAILABLE_SPEEDS } from '~/server/db/schema'
+import type { Product, ProductFamily, EquipmentCost, ProductAddon, ProductHardwareLink, ProductCostParam } from '~/server/db/schema'
+
+type HardwareLinkEntry = { hardwareId: number; quantity: number; isDefault: boolean; isRequired: boolean }
+type CostParamEntry = { name: string; amount: number; frequency: 'one_time' | 'monthly'; costType: 'COGS' | 'CAPEX' | 'OPEX'; currency: string }
 
 export const Route = createFileRoute('/admin/products')({
   component: AdminProducts,
@@ -36,7 +41,9 @@ function AdminProducts() {
   const [showHardwareForm, setShowHardwareForm] = useState(false)
   const [editingHardware, setEditingHardware] = useState<EquipmentCost | null>(null)
   const [detailProduct, setDetailProduct] = useState<Product | null>(null)
-  const [detailRelations, setDetailRelations] = useState<{ addons: (ProductAddon & { addon: Product | undefined })[]; hardware: (ProductHardwareLink & { hardware: EquipmentCost | undefined })[] } | null>(null)
+  const [detailRelations, setDetailRelations] = useState<{ addons: (ProductAddon & { addon: Product | undefined })[]; hardware: (ProductHardwareLink & { hardware: EquipmentCost | undefined })[]; costParams: ProductCostParam[] } | null>(null)
+  const [editingHardwareLinks, setEditingHardwareLinks] = useState<HardwareLinkEntry[]>([])
+  const [editingCostParams, setEditingCostParams] = useState<CostParamEntry[]>([])
 
   const products = tab === 'main' ? mainProducts : addonProducts
 
@@ -51,7 +58,7 @@ function AdminProducts() {
   async function openProductDetail(product: Product) {
     setDetailProduct(product)
     const data = await getProductWithRelations({ data: { id: product.id } })
-    setDetailRelations({ addons: data.addons, hardware: data.hardware })
+    setDetailRelations({ addons: data.addons, hardware: data.hardware, costParams: data.costParams ?? [] })
   }
 
   const tabs: { key: Tab; label: string; count: number }[] = [
@@ -103,22 +110,24 @@ function AdminProducts() {
               onChange={(e) => setSearch(e.target.value)}
               className="px-3 py-2 border border-gray-300 rounded-lg text-sm w-64 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
-            <select
-              value={familyFilter}
-              onChange={(e) => setFamilyFilter(e.target.value)}
-              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">All Families</option>
-              {families.map((f) => (
-                <option key={f.id} value={f.code}>{f.code} — {f.name}</option>
-              ))}
-            </select>
+            {families.length > 1 && (
+              <select
+                value={familyFilter}
+                onChange={(e) => setFamilyFilter(e.target.value)}
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">All Families</option>
+                {families.map((f) => (
+                  <option key={f.id} value={f.code}>{f.code} — {f.name}</option>
+                ))}
+              </select>
+            )}
             <span className="flex items-center text-sm text-gray-500">
               {filtered.length} products
             </span>
             <div className="ml-auto">
               <button
-                onClick={() => { setEditingProduct(null); setShowProductForm(true) }}
+                onClick={() => { setEditingProduct(null); setEditingHardwareLinks([]); setEditingCostParams([]); setShowProductForm(true) }}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
               >
                 + Add {tab === 'addon' ? 'Addon' : 'Product'}
@@ -130,7 +139,13 @@ function AdminProducts() {
           <ProductTable
             products={filtered}
             onRowClick={openProductDetail}
-            onEdit={(p) => { setEditingProduct(p); setShowProductForm(true) }}
+            onEdit={async (p) => {
+              const data = await getProductWithRelations({ data: { id: p.id } })
+              setEditingHardwareLinks(data.hardware.map((h) => ({ hardwareId: h.hardwareId, quantity: h.quantity ?? 1, isDefault: h.isDefault ?? false, isRequired: h.isRequired ?? false })))
+              setEditingCostParams((data.costParams ?? []).map((cp) => ({ name: cp.name, amount: cp.amount, frequency: cp.frequency as 'one_time' | 'monthly', costType: cp.costType as 'COGS' | 'CAPEX' | 'OPEX', currency: cp.currency })))
+              setEditingProduct(p)
+              setShowProductForm(true)
+            }}
             onDelete={async (id) => { await deleteProduct({ data: { id } }); reload() }}
           />
         </>
@@ -146,7 +161,7 @@ function AdminProducts() {
           onClose={() => { setDetailProduct(null); setDetailRelations(null) }}
           onUpdate={async () => {
             const data = await getProductWithRelations({ data: { id: detailProduct.id } })
-            setDetailRelations({ addons: data.addons, hardware: data.hardware })
+            setDetailRelations({ addons: data.addons, hardware: data.hardware, costParams: data.costParams ?? [] })
           }}
         />
       )}
@@ -157,17 +172,62 @@ function AdminProducts() {
           product={editingProduct}
           families={families}
           isAddon={tab === 'addon'}
+          hardware={hardware}
+          existingHardwareLinks={editingHardwareLinks}
+          existingCostParams={editingCostParams}
           onClose={() => { setShowProductForm(false); setEditingProduct(null) }}
-          onSave={async (formData) => {
-            if (editingProduct) {
-              const { id, ...rest } = formData as Record<string, string | number | boolean | null>
-              await updateProduct({ data: { id: editingProduct.id, updates: rest } })
-            } else {
-              await createProduct({ data: formData as Parameters<typeof createProduct>[0]['data'] })
+          onSave={async (formData, hardwareLinks, costParams) => {
+            try {
+              let productId: number
+              if (editingProduct) {
+                const { id, ...rest } = formData as Record<string, string | number | boolean | null | undefined>
+                const updates = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined))
+                await updateProduct({ data: { id: editingProduct.id, updates } })
+                productId = editingProduct.id
+
+                // Diff hardware links
+                const oldIds = new Set(editingHardwareLinks.map((l) => l.hardwareId))
+                const newIds = new Set(hardwareLinks.map((l) => l.hardwareId))
+
+                // Unlink removed
+                for (const old of editingHardwareLinks) {
+                  if (!newIds.has(old.hardwareId)) {
+                    await unlinkHardwareFromProduct({ data: { productId, hardwareId: old.hardwareId } })
+                  }
+                }
+
+                // Link added or update changed (unlink + relink for simplicity)
+                for (const link of hardwareLinks) {
+                  if (!oldIds.has(link.hardwareId)) {
+                    await linkHardwareToProduct({ data: { productId, ...link } })
+                  } else {
+                    const oldLink = editingHardwareLinks.find((l) => l.hardwareId === link.hardwareId)!
+                    if (oldLink.quantity !== link.quantity || oldLink.isDefault !== link.isDefault || oldLink.isRequired !== link.isRequired) {
+                      await unlinkHardwareFromProduct({ data: { productId, hardwareId: link.hardwareId } })
+                      await linkHardwareToProduct({ data: { productId, ...link } })
+                    }
+                  }
+                }
+              } else {
+                const created = await createProduct({ data: formData as Parameters<typeof createProduct>[0]['data'] })
+                productId = created.id
+
+                // Link all selected hardware
+                for (const link of hardwareLinks) {
+                  await linkHardwareToProduct({ data: { productId, ...link } })
+                }
+              }
+
+              // Save cost parameters
+              await saveProductCostParams({ data: { productId, params: costParams } })
+
+              setShowProductForm(false)
+              setEditingProduct(null)
+              reload()
+            } catch (err) {
+              console.error('Failed to save product:', err)
+              alert('Failed to save product. Check console for details.')
             }
-            setShowProductForm(false)
-            setEditingProduct(null)
-            reload()
           }}
         />
       )}
@@ -210,10 +270,6 @@ function ProductTable({
   const colGroups = [
     { label: 'Product', cols: ['Display Name', 'Family', 'Access', 'BW'] },
     { label: 'List Prices', cols: ['OT', 'Monthly'], color: 'bg-blue-50' },
-    { label: 'COGS', cols: ['OT', 'Annual'], color: 'bg-orange-50' },
-    { label: 'CPE', cols: ['Install', 'CAPEX'], color: 'bg-green-50' },
-    { label: 'Network', cols: ['BB', 'GT'], color: 'bg-purple-50' },
-    { label: 'OPEX', cols: ['OT', 'Annual'], color: 'bg-amber-50' },
     { label: '', cols: ['Actions'] },
   ]
 
@@ -260,14 +316,6 @@ function ProductTable({
               <td className="px-2 py-1.5 text-gray-600 text-right">{product.bandwidth || '—'}</td>
               <td className="px-2 py-1.5 text-right font-mono bg-blue-50/30">{fmt(product.listPriceOneTime)}</td>
               <td className="px-2 py-1.5 text-right font-mono bg-blue-50/30">{fmt(product.listPriceMonthly)}</td>
-              <td className="px-2 py-1.5 text-right font-mono bg-orange-50/30">{fmt(product.cogsOneTime)}</td>
-              <td className="px-2 py-1.5 text-right font-mono bg-orange-50/30">{fmt(product.cogsAnnual)}</td>
-              <td className="px-2 py-1.5 text-right font-mono bg-green-50/30">{fmt(product.cpeInstallation)}</td>
-              <td className="px-2 py-1.5 text-right font-mono bg-green-50/30">{fmt(product.cpeCapex)}</td>
-              <td className="px-2 py-1.5 text-right font-mono bg-purple-50/30">{fmt(product.backboneCostAnnual)}</td>
-              <td className="px-2 py-1.5 text-right font-mono bg-purple-50/30">{fmt(product.gtCostAnnual)}</td>
-              <td className="px-2 py-1.5 text-right font-mono bg-amber-50/30">{fmt(product.opexOneTime)}</td>
-              <td className="px-2 py-1.5 text-right font-mono bg-amber-50/30">{fmt(product.opexAnnual)}</td>
               <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
                 <div className="flex gap-1">
                   <button
@@ -394,7 +442,7 @@ function ProductDetailPanel({
   onUpdate,
 }: {
   product: Product
-  relations: { addons: (ProductAddon & { addon: Product | undefined })[]; hardware: (ProductHardwareLink & { hardware: EquipmentCost | undefined })[] }
+  relations: { addons: (ProductAddon & { addon: Product | undefined })[]; hardware: (ProductHardwareLink & { hardware: EquipmentCost | undefined })[]; costParams: ProductCostParam[] }
   addonProducts: Product[]
   hardware: EquipmentCost[]
   onClose: () => void
@@ -425,18 +473,32 @@ function ProductDetailPanel({
         </div>
 
         <div className="px-6 py-4 space-y-6">
-          {/* Cost summary */}
+          {/* List Prices */}
           <div>
-            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">Cost Summary</h3>
+            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">List Prices</h3>
             <div className="grid grid-cols-2 gap-2 text-sm">
-              <div className="flex justify-between"><span className="text-gray-500">List OT</span><span className="font-mono">{fmt(product.listPriceOneTime)}</span></div>
-              <div className="flex justify-between"><span className="text-gray-500">List Monthly</span><span className="font-mono">{fmt(product.listPriceMonthly)}</span></div>
-              <div className="flex justify-between"><span className="text-gray-500">COGS OT</span><span className="font-mono">{fmt(product.cogsOneTime)}</span></div>
-              <div className="flex justify-between"><span className="text-gray-500">COGS Annual</span><span className="font-mono">{fmt(product.cogsAnnual)}</span></div>
-              <div className="flex justify-between"><span className="text-gray-500">CPE CAPEX</span><span className="font-mono">{fmt(product.cpeCapex)}</span></div>
-              <div className="flex justify-between"><span className="text-gray-500">Site CAPEX</span><span className="font-mono">{fmt(product.siteCapex)}</span></div>
+              <div className="flex justify-between"><span className="text-gray-500">One-Time</span><span className="font-mono">{fmt(product.listPriceOneTime)}</span></div>
+              <div className="flex justify-between"><span className="text-gray-500">Monthly</span><span className="font-mono">{fmt(product.listPriceMonthly)}</span></div>
             </div>
           </div>
+
+          {/* Cost Parameters */}
+          {relations.costParams.length > 0 && (
+            <div>
+              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">Cost Parameters</h3>
+              <div className="space-y-1">
+                {relations.costParams.map((cp) => (
+                  <div key={cp.id} className="flex items-center justify-between bg-gray-50 rounded px-3 py-1.5 text-sm">
+                    <div>
+                      <span className="font-medium text-gray-900">{cp.name}</span>
+                      <span className="ml-2 text-xs text-gray-500">{cp.costType} · {cp.frequency === 'one_time' ? 'One-Time' : 'Monthly'} · {cp.currency}</span>
+                    </div>
+                    <span className="font-mono">{fmt(cp.amount)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Linked Addons */}
           {!product.isAddonService && (
@@ -596,44 +658,50 @@ function ProductFormModal({
   product,
   families,
   isAddon,
+  hardware,
+  existingHardwareLinks,
+  existingCostParams,
   onClose,
   onSave,
 }: {
   product: Product | null
   families: ProductFamily[]
   isAddon: boolean
+  hardware: EquipmentCost[]
+  existingHardwareLinks: HardwareLinkEntry[]
+  existingCostParams: CostParamEntry[]
   onClose: () => void
-  onSave: (data: Record<string, string | number | boolean | undefined>) => void
+  onSave: (data: Record<string, string | number | boolean | undefined>, hardwareLinks: HardwareLinkEntry[], costParams: CostParamEntry[]) => void
 }) {
+  const defaultFamily = families.length === 1 ? families[0] : undefined
   const [form, setForm] = useState(() => ({
     country: product?.country ?? 'SE',
-    familyCode: product?.familyCode ?? '',
-    familyId: product?.familyId ?? undefined,
+    familyCode: product?.familyCode ?? defaultFamily?.code ?? '',
+    familyId: product?.familyId ?? defaultFamily?.id ?? undefined,
     displayName: product?.displayName ?? '',
     priceToolCode: product?.priceToolCode ?? '',
     lookupKey: product?.lookupKey ?? '',
     accessType: product?.accessType ?? '',
     zoneType: product?.zoneType ?? undefined,
+    hasBandwidth: product?.hasBandwidth ?? false,
     bandwidth: product?.bandwidth ?? undefined,
     listPriceOneTime: product?.listPriceOneTime ?? 0,
     listPriceMonthly: product?.listPriceMonthly ?? 0,
     defaultAccessOneTime: product?.defaultAccessOneTime ?? 0,
     defaultAccessMonthly: product?.defaultAccessMonthly ?? 0,
-    cogsOneTime: product?.cogsOneTime ?? 0,
-    cogsAnnual: product?.cogsAnnual ?? 0,
-    cpeInstallation: product?.cpeInstallation ?? 0,
-    cpeCapex: product?.cpeCapex ?? 0,
-    siteInstallation: product?.siteInstallation ?? 0,
-    siteCapex: product?.siteCapex ?? 0,
-    backboneCostAnnual: product?.backboneCostAnnual ?? 0,
-    gtCostAnnual: product?.gtCostAnnual ?? 0,
-    opexOneTime: product?.opexOneTime ?? 0,
-    opexAnnual: product?.opexAnnual ?? 0,
     breakpointAccessOneTime: product?.breakpointAccessOneTime ?? 0,
     breakpointAccessAnnual: product?.breakpointAccessAnnual ?? 0,
     marginalSurcharge: product?.marginalSurcharge ?? 0,
     isAddonService: product?.isAddonService ?? isAddon,
   }))
+
+  const [hardwareLinks, setHardwareLinks] = useState<HardwareLinkEntry[]>(existingHardwareLinks)
+  const [addingHw, setAddingHw] = useState(false)
+  const [selectedHwId, setSelectedHwId] = useState<number | null>(null)
+  const [costParams, setCostParams] = useState<CostParamEntry[]>(existingCostParams)
+
+  const linkedHwIds = new Set(hardwareLinks.map((h) => h.hardwareId))
+  const availableHw = hardware.filter((h) => !linkedHwIds.has(h.id))
 
   const set = (key: string, value: string | number | boolean | undefined) => setForm((prev) => ({ ...prev, [key]: value }))
 
@@ -646,7 +714,6 @@ function ProductFormModal({
         { key: 'priceToolCode', label: 'Price Tool Code', type: 'text', required: true },
         { key: 'lookupKey', label: 'Lookup Key', type: 'text', required: true },
         { key: 'accessType', label: 'Access Type', type: 'text' },
-        { key: 'bandwidth', label: 'Bandwidth (Mbit)', type: 'number' },
         { key: 'zoneType', label: 'Zone Type', type: 'number' },
       ],
     },
@@ -657,41 +724,6 @@ function ProductFormModal({
         { key: 'listPriceMonthly', label: 'Monthly', type: 'number' },
         { key: 'defaultAccessOneTime', label: 'Default Access OT', type: 'number' },
         { key: 'defaultAccessMonthly', label: 'Default Access Monthly', type: 'number' },
-      ],
-    },
-    {
-      label: 'COGS',
-      fields: [
-        { key: 'cogsOneTime', label: 'One-Time', type: 'number' },
-        { key: 'cogsAnnual', label: 'Annual', type: 'number' },
-      ],
-    },
-    {
-      label: 'CPE Equipment',
-      fields: [
-        { key: 'cpeInstallation', label: 'Installation', type: 'number' },
-        { key: 'cpeCapex', label: 'CAPEX', type: 'number' },
-      ],
-    },
-    {
-      label: 'Site Costs',
-      fields: [
-        { key: 'siteInstallation', label: 'Installation', type: 'number' },
-        { key: 'siteCapex', label: 'CAPEX', type: 'number' },
-      ],
-    },
-    {
-      label: 'Network',
-      fields: [
-        { key: 'backboneCostAnnual', label: 'Backbone Annual', type: 'number' },
-        { key: 'gtCostAnnual', label: 'GT Annual', type: 'number' },
-      ],
-    },
-    {
-      label: 'OPEX',
-      fields: [
-        { key: 'opexOneTime', label: 'One-Time', type: 'number' },
-        { key: 'opexAnnual', label: 'Annual', type: 'number' },
       ],
     },
     {
@@ -715,7 +747,7 @@ function ProductFormModal({
         </div>
 
         <div className="space-y-5">
-          {/* Country + Addon toggle */}
+          {/* Country + Family */}
           <div className="flex gap-4 items-center">
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Country</label>
@@ -742,15 +774,36 @@ function ProductFormModal({
                 {families.map((f) => <option key={f.id} value={f.id}>{f.code} — {f.name}</option>)}
               </select>
             </div>
-            <label className="flex items-center gap-2 text-sm mt-4">
+          </div>
+
+          {/* Bandwidth toggle + speed selector */}
+          <div className="flex gap-4 items-center">
+            <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
-                checked={form.isAddonService}
-                onChange={(e) => set('isAddonService', e.target.checked)}
-                className="rounded"
+                checked={form.hasBandwidth}
+                onChange={(e) => {
+                  set('hasBandwidth', e.target.checked)
+                  if (!e.target.checked) set('bandwidth', undefined)
+                }}
               />
-              Addon Service
+              Uses Bandwidth
             </label>
+            {form.hasBandwidth && (
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Default Speed (Mbit)</label>
+                <select
+                  value={form.bandwidth ?? ''}
+                  onChange={(e) => set('bandwidth', e.target.value === '' ? undefined : Number(e.target.value))}
+                  className="px-2 py-1.5 border border-gray-300 rounded text-sm"
+                >
+                  <option value="">Select...</option>
+                  {AVAILABLE_SPEEDS.map((s) => (
+                    <option key={s} value={s}>{s} Mbit</option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           {fieldGroups.map((group) => (
@@ -772,6 +825,183 @@ function ProductFormModal({
               </div>
             </div>
           ))}
+
+          {/* Cost Parameters */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Cost Parameters</h3>
+              <button
+                type="button"
+                onClick={() => setCostParams((prev) => [...prev, { name: '', amount: 0, frequency: 'monthly', costType: 'COGS', currency: 'SEK' }])}
+                className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+              >
+                + Add Cost
+              </button>
+            </div>
+
+            {costParams.length === 0 ? (
+              <p className="text-sm text-gray-400">No cost parameters</p>
+            ) : (
+              <div className="space-y-2">
+                {costParams.map((cp, idx) => (
+                  <div key={idx} className="bg-gray-50 rounded px-3 py-2 text-sm">
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <input
+                        type="text"
+                        placeholder="Name"
+                        value={cp.name}
+                        onChange={(e) => setCostParams((prev) => prev.map((p, i) => i === idx ? { ...p, name: e.target.value } : p))}
+                        className="flex-1 px-2 py-1 border border-gray-300 rounded text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setCostParams((prev) => prev.filter((_, i) => i !== idx))}
+                        className="text-xs text-red-500 hover:text-red-700"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        placeholder="Amount"
+                        value={cp.amount || ''}
+                        onChange={(e) => setCostParams((prev) => prev.map((p, i) => i === idx ? { ...p, amount: Number(e.target.value) || 0 } : p))}
+                        className="w-24 px-2 py-1 border border-gray-300 rounded text-sm text-right"
+                      />
+                      <select
+                        value={cp.frequency}
+                        onChange={(e) => setCostParams((prev) => prev.map((p, i) => i === idx ? { ...p, frequency: e.target.value as 'one_time' | 'monthly' } : p))}
+                        className="px-2 py-1 border border-gray-300 rounded text-xs"
+                      >
+                        <option value="one_time">One-Time</option>
+                        <option value="monthly">Monthly</option>
+                      </select>
+                      <select
+                        value={cp.costType}
+                        onChange={(e) => setCostParams((prev) => prev.map((p, i) => i === idx ? { ...p, costType: e.target.value as 'COGS' | 'CAPEX' | 'OPEX' } : p))}
+                        className="px-2 py-1 border border-gray-300 rounded text-xs"
+                      >
+                        <option value="COGS">COGS</option>
+                        <option value="CAPEX">CAPEX</option>
+                        <option value="OPEX">OPEX</option>
+                      </select>
+                      <select
+                        value={cp.currency}
+                        onChange={(e) => setCostParams((prev) => prev.map((p, i) => i === idx ? { ...p, currency: e.target.value } : p))}
+                        className="px-2 py-1 border border-gray-300 rounded text-xs w-20"
+                      >
+                        <option value="SEK">SEK</option>
+                        <option value="EUR">EUR</option>
+                        <option value="USD">USD</option>
+                      </select>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Hardware Selection */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Hardware</h3>
+              <button
+                type="button"
+                onClick={() => setAddingHw(true)}
+                className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+              >
+                + Add Hardware
+              </button>
+            </div>
+
+            {hardwareLinks.length === 0 ? (
+              <p className="text-sm text-gray-400">No hardware selected</p>
+            ) : (
+              <div className="space-y-2">
+                {hardwareLinks.map((link) => {
+                  const hw = hardware.find((h) => h.id === link.hardwareId)
+                  return (
+                    <div key={link.hardwareId} className="flex items-center gap-3 bg-gray-50 rounded px-3 py-2 text-sm">
+                      <div className="flex-1 min-w-0">
+                        <span className="font-medium text-gray-900 truncate">{hw?.description || `HW #${link.hardwareId}`}</span>
+                        {hw && <span className="text-gray-500 ml-1 text-xs">({hw.code})</span>}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <label className="text-xs text-gray-500">Qty</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={link.quantity}
+                          onChange={(e) => setHardwareLinks((prev) => prev.map((l) => l.hardwareId === link.hardwareId ? { ...l, quantity: Math.max(1, Number(e.target.value) || 1) } : l))}
+                          className="w-14 px-1 py-0.5 border border-gray-300 rounded text-xs text-center"
+                        />
+                      </div>
+                      <label className="flex items-center gap-1 text-xs text-gray-600">
+                        <input
+                          type="checkbox"
+                          checked={link.isDefault}
+                          onChange={(e) => setHardwareLinks((prev) => prev.map((l) => l.hardwareId === link.hardwareId ? { ...l, isDefault: e.target.checked } : l))}
+                          className="rounded"
+                        />
+                        Default
+                      </label>
+                      <label className="flex items-center gap-1 text-xs text-gray-600">
+                        <input
+                          type="checkbox"
+                          checked={link.isRequired}
+                          onChange={(e) => setHardwareLinks((prev) => prev.map((l) => l.hardwareId === link.hardwareId ? { ...l, isRequired: e.target.checked } : l))}
+                          className="rounded"
+                        />
+                        Required
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setHardwareLinks((prev) => prev.filter((l) => l.hardwareId !== link.hardwareId))}
+                        className="text-xs text-red-500 hover:text-red-700"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {addingHw && (
+              <div className="mt-2 flex gap-2">
+                <select
+                  value={selectedHwId ?? ''}
+                  onChange={(e) => setSelectedHwId(Number(e.target.value) || null)}
+                  className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm"
+                >
+                  <option value="">Select hardware...</option>
+                  {availableHw.map((h) => (
+                    <option key={h.id} value={h.id}>{h.code} — {h.description} ({fmt(h.netPriceSek)} SEK)</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!selectedHwId) return
+                    setHardwareLinks((prev) => [...prev, { hardwareId: selectedHwId, quantity: 1, isDefault: false, isRequired: false }])
+                    setAddingHw(false)
+                    setSelectedHwId(null)
+                  }}
+                  className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm"
+                >
+                  Add
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setAddingHw(false); setSelectedHwId(null) }}
+                  className="px-3 py-1.5 bg-gray-200 text-gray-700 rounded text-sm"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-200">
@@ -782,7 +1012,7 @@ function ProductFormModal({
             Cancel
           </button>
           <button
-            onClick={() => onSave(form)}
+            onClick={() => onSave(form, hardwareLinks, costParams)}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
           >
             {product ? 'Save Changes' : 'Create Product'}

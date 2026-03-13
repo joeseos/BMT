@@ -106,17 +106,9 @@ async function seed() {
   }
   console.log(`  ✓ ${rules.length} approval rules`)
 
-  // ── Sample Product Families ──
+  // ── Product Families ──
   const families = [
-    { code: '5GBBB', name: '5G Bredband Bas', category: 'internet_connect', country: 'SE' },
-    { code: 'ICSR', name: 'Internet Connect Symmetric Router', category: 'internet_connect', country: 'SE' },
-    { code: 'ICSC', name: 'Internet Connect Symmetric CPE', category: 'internet_connect', country: 'SE' },
-    { code: 'NCMC', name: 'Nordic Connect Managed CPE', category: 'nordic_connect', country: 'SE' },
-    { code: 'NCMR', name: 'Nordic Connect Managed Router', category: 'nordic_connect', country: 'SE' },
-    { code: 'NCP', name: 'Nordic Connect Partner', category: 'nordic_connect', country: 'SE' },
-    { code: 'NCO', name: 'Nordic Connect Options', category: 'nordic_connect', country: 'SE' },
-    { code: 'COLO', name: 'Colocation', category: 'colocation', country: 'SE' },
-    { code: 'MSS', name: 'Managed Security Services', category: 'mss', country: 'SE' },
+    { code: 'NS', name: 'Network Services', category: 'network_services', country: 'SE' },
   ]
 
   for (const family of families) {
