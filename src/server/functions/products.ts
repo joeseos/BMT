@@ -1,26 +1,30 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { db } from '../db'
-import { products, productFamilies, auditLog } from '../db/schema'
-import { eq, and, like, desc } from 'drizzle-orm'
+import { products, productFamilies, productAddons, productHardware, equipmentCosts, auditLog } from '../db/schema'
+import { eq, and, like, desc, SQL } from 'drizzle-orm'
 
 // ── List Products ──
 
 export const getProducts = createServerFn({ method: 'GET' })
-  .validator(z.object({
+  .inputValidator(z.object({
     familyCode: z.string().optional(),
-    country: z.string().default('SE'),
+    country: z.string().optional(),
     search: z.string().optional(),
-    activeOnly: z.boolean().default(true),
-  }).optional())
+    activeOnly: z.boolean().optional(),
+    isAddonService: z.boolean().optional(),
+  }))
   .handler(async ({ data }) => {
     const filters = data ?? {}
-    const conditions = []
+    const country = filters.country ?? 'SE'
+    const activeOnly = filters.activeOnly ?? true
+    const conditions: SQL[] = []
 
-    if (filters.country) conditions.push(eq(products.country, filters.country))
+    if (country) conditions.push(eq(products.country, country))
     if (filters.familyCode) conditions.push(eq(products.familyCode, filters.familyCode))
-    if (filters.activeOnly) conditions.push(eq(products.isActive, true))
+    if (activeOnly) conditions.push(eq(products.isActive, true))
     if (filters.search) conditions.push(like(products.displayName, `%${filters.search}%`))
+    if (filters.isAddonService !== undefined) conditions.push(eq(products.isAddonService, filters.isAddonService))
 
     const result = await db.select().from(products)
       .where(conditions.length > 0 ? and(...conditions) : undefined)
@@ -32,7 +36,7 @@ export const getProducts = createServerFn({ method: 'GET' })
 // ── Get Single Product ──
 
 export const getProduct = createServerFn({ method: 'GET' })
-  .validator(z.object({ id: z.number() }))
+  .inputValidator(z.object({ id: z.number() }))
   .handler(async ({ data }) => {
     return db.select().from(products).where(eq(products.id, data.id)).get()
   })
@@ -70,7 +74,7 @@ const CreateProductInput = z.object({
 })
 
 export const createProduct = createServerFn({ method: 'POST' })
-  .validator(CreateProductInput)
+  .inputValidator(CreateProductInput)
   .handler(async ({ data }) => {
     const result = await db.insert(products).values(data).returning()
     const created = result[0]
@@ -88,7 +92,7 @@ export const createProduct = createServerFn({ method: 'POST' })
 // ── Update Product ──
 
 export const updateProduct = createServerFn({ method: 'POST' })
-  .validator(z.object({
+  .inputValidator(z.object({
     id: z.number(),
     updates: z.record(z.string(), z.union([z.number(), z.string(), z.boolean(), z.null()])),
   }))
@@ -114,7 +118,7 @@ export const updateProduct = createServerFn({ method: 'POST' })
 // ── Delete Product (soft) ──
 
 export const deleteProduct = createServerFn({ method: 'POST' })
-  .validator(z.object({ id: z.number() }))
+  .inputValidator(z.object({ id: z.number() }))
   .handler(async ({ data }) => {
     await db.update(products)
       .set({ isActive: false, updatedAt: new Date().toISOString() })
@@ -137,7 +141,7 @@ export const getProductFamilies = createServerFn({ method: 'GET' })
   })
 
 export const createProductFamily = createServerFn({ method: 'POST' })
-  .validator(z.object({
+  .inputValidator(z.object({
     code: z.string(),
     name: z.string(),
     category: z.string(),
@@ -146,4 +150,158 @@ export const createProductFamily = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     const result = await db.insert(productFamilies).values(data).returning()
     return result[0]
+  })
+
+// ── Product Relations (Addons) ──
+
+export const getProductWithRelations = createServerFn({ method: 'GET' })
+  .inputValidator(z.object({ id: z.number() }))
+  .handler(async ({ data }) => {
+    const product = await db.select().from(products).where(eq(products.id, data.id)).get()
+    if (!product) throw new Error('Product not found')
+
+    const addonLinks = await db.select().from(productAddons)
+      .where(eq(productAddons.mainProductId, data.id))
+      .orderBy(productAddons.displayOrder)
+
+    const addonProducts = await Promise.all(
+      addonLinks.map(async (link) => {
+        const addon = await db.select().from(products).where(eq(products.id, link.addonProductId)).get()
+        return { ...link, addon }
+      })
+    )
+
+    const hardwareLinks = await db.select().from(productHardware)
+      .where(eq(productHardware.productId, data.id))
+      .orderBy(productHardware.displayOrder)
+
+    const hardwareItems = await Promise.all(
+      hardwareLinks.map(async (link) => {
+        const hw = await db.select().from(equipmentCosts).where(eq(equipmentCosts.id, link.hardwareId)).get()
+        return { ...link, hardware: hw }
+      })
+    )
+
+    return { product, addons: addonProducts, hardware: hardwareItems }
+  })
+
+export const linkAddonToProduct = createServerFn({ method: 'POST' })
+  .inputValidator(z.object({
+    mainProductId: z.number(),
+    addonProductId: z.number(),
+    isDefault: z.boolean().default(false),
+    displayOrder: z.number().default(0),
+  }))
+  .handler(async ({ data }) => {
+    const result = await db.insert(productAddons).values(data).returning()
+    return result[0]
+  })
+
+export const unlinkAddonFromProduct = createServerFn({ method: 'POST' })
+  .inputValidator(z.object({
+    mainProductId: z.number(),
+    addonProductId: z.number(),
+  }))
+  .handler(async ({ data }) => {
+    await db.delete(productAddons).where(
+      and(
+        eq(productAddons.mainProductId, data.mainProductId),
+        eq(productAddons.addonProductId, data.addonProductId),
+      )
+    )
+    return { success: true }
+  })
+
+// ── Product Relations (Hardware) ──
+
+export const linkHardwareToProduct = createServerFn({ method: 'POST' })
+  .inputValidator(z.object({
+    productId: z.number(),
+    hardwareId: z.number(),
+    quantity: z.number().default(1),
+    isDefault: z.boolean().default(false),
+    isRequired: z.boolean().default(false),
+    displayOrder: z.number().default(0),
+  }))
+  .handler(async ({ data }) => {
+    const result = await db.insert(productHardware).values(data).returning()
+    return result[0]
+  })
+
+export const unlinkHardwareFromProduct = createServerFn({ method: 'POST' })
+  .inputValidator(z.object({
+    productId: z.number(),
+    hardwareId: z.number(),
+  }))
+  .handler(async ({ data }) => {
+    await db.delete(productHardware).where(
+      and(
+        eq(productHardware.productId, data.productId),
+        eq(productHardware.hardwareId, data.hardwareId),
+      )
+    )
+    return { success: true }
+  })
+
+// ── Hardware Catalog CRUD ──
+
+export const getHardwareCatalog = createServerFn({ method: 'GET' })
+  .handler(async () => {
+    return db.select().from(equipmentCosts).orderBy(equipmentCosts.category, equipmentCosts.code)
+  })
+
+const HardwareInput = z.object({
+  category: z.string(),
+  code: z.string(),
+  description: z.string(),
+  listPriceUsd: z.number().nullable().default(null),
+  discountPercent: z.number().nullable().default(null),
+  netPriceSek: z.number(),
+  notes: z.string().nullable().default(null),
+})
+
+export const createHardware = createServerFn({ method: 'POST' })
+  .inputValidator(HardwareInput)
+  .handler(async ({ data }) => {
+    const result = await db.insert(equipmentCosts).values(data).returning()
+    await db.insert(auditLog).values({
+      tableName: 'equipment_costs',
+      recordId: result[0].id,
+      action: 'create',
+      newValue: JSON.stringify(data),
+    })
+    return result[0]
+  })
+
+export const updateHardware = createServerFn({ method: 'POST' })
+  .inputValidator(z.object({
+    id: z.number(),
+    updates: z.record(z.string(), z.union([z.number(), z.string(), z.null()])),
+  }))
+  .handler(async ({ data }) => {
+    const existing = await db.select().from(equipmentCosts).where(eq(equipmentCosts.id, data.id)).get()
+    if (!existing) throw new Error('Hardware not found')
+
+    await db.update(equipmentCosts).set(data.updates).where(eq(equipmentCosts.id, data.id))
+
+    await db.insert(auditLog).values({
+      tableName: 'equipment_costs',
+      recordId: data.id,
+      action: 'update',
+      oldValue: JSON.stringify(existing),
+      newValue: JSON.stringify(data.updates),
+    })
+    return db.select().from(equipmentCosts).where(eq(equipmentCosts.id, data.id)).get()
+  })
+
+export const deleteHardware = createServerFn({ method: 'POST' })
+  .inputValidator(z.object({ id: z.number() }))
+  .handler(async ({ data }) => {
+    await db.delete(equipmentCosts).where(eq(equipmentCosts.id, data.id))
+    await db.insert(auditLog).values({
+      tableName: 'equipment_costs',
+      recordId: data.id,
+      action: 'delete',
+    })
+    return { success: true }
   })

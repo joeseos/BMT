@@ -5,7 +5,7 @@
     "module": "ESNext",
     "target": "ES2022",
     "skipLibCheck": true,
-    "strictNullChecks": true,
+    "strict": true,
     "paths": {
       "~/*": ["./src/*"]
     }

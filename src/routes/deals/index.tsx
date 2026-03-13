@@ -47,7 +47,8 @@ function DealsList() {
                   <td className="px-4 py-3 text-sm text-gray-500">#{deal.id}</td>
                   <td className="px-4 py-3">
                     <Link
-                      to={`/deals/${deal.id}`}
+                      to="/deals/$dealId"
+                      params={{ dealId: String(deal.id) }}
                       className="text-blue-600 hover:text-blue-800 font-medium text-sm"
                     >
                       {deal.customerName}
