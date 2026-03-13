@@ -27,6 +27,7 @@ RUN npm ci --omit=dev
 # copy build output and migrations
 COPY --from=builder /app/.output .output
 COPY --from=builder /app/src/server/db/migrations ./src/server/db/migrations
+COPY --from=builder /app/scripts ./scripts
 
 COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh
