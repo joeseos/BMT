@@ -84,14 +84,3 @@ The pricing engine (`src/server/functions/pricing-engine.ts`) replicates the Exc
 7. **Payback calculation** with status classification
 8. **Zone classification** based on access cost thresholds
 9. **Approval level determination** based on payback, margin, and contract value
-
-## What's Next
-
-- [ ] Inline cell editing on product catalog table
-- [ ] Product creation form (full 26-field form)
-- [ ] Site line add/edit modal on deal detail page
-- [ ] Live recalculation on field change (call `calculateSitePrice` per line)
-- [ ] Nobucs/NOF/Prisbilaga export (CSV + PDF generation)
-- [ ] Authentication (BetterAuth or similar) for role-based access
-- [ ] SLA cost matrix management in admin
-- [ ] Bandwidth cost tier management in admin
