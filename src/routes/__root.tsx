@@ -9,6 +9,7 @@ import {
   Scripts,
 } from '@tanstack/react-router'
 import { useState } from 'react'
+import '../styles.css'
 
 export const Route = createRootRoute({
   head: () => ({
@@ -16,9 +17,6 @@ export const Route = createRootRoute({
       { charSet: 'utf-8' },
       { name: 'viewport', content: 'width=device-width, initial-scale=1' },
       { title: 'Pricing Tool' },
-    ],
-    links: [
-      { rel: 'stylesheet', href: '/src/styles.css' },
     ],
   }),
   component: RootComponent,
