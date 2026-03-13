@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { getApprovalRules, updateApprovalRule } from '~/server/functions/config'
+import type { ApprovalRule } from '~/server/db/schema'
 
 export const Route = createFileRoute('/admin/approval-rules')({
   component: AdminApprovalRules,
@@ -50,7 +51,7 @@ function AdminApprovalRules() {
   )
 }
 
-function ApprovalRuleRow({ rule }: { rule: any }) {
+function ApprovalRuleRow({ rule }: { rule: ApprovalRule }) {
   const [editing, setEditing] = useState(false)
   const [values, setValues] = useState({
     maxPaybackMonths: rule.maxPaybackMonths?.toString() ?? '',

@@ -15,7 +15,7 @@ export const getGlobalConfig = createServerFn({ method: 'GET' })
   })
 
 export const updateConfigValue = createServerFn({ method: 'POST' })
-  .validator(z.object({
+  .inputValidator(z.object({
     key: z.string(),
     value: z.number(),
   }))
@@ -37,7 +37,7 @@ export const updateConfigValue = createServerFn({ method: 'POST' })
   })
 
 export const addConfigValue = createServerFn({ method: 'POST' })
-  .validator(z.object({
+  .inputValidator(z.object({
     key: z.string(),
     value: z.number(),
     label: z.string().optional(),
@@ -57,7 +57,7 @@ export const getZoneBreakpoints = createServerFn({ method: 'GET' })
   })
 
 export const updateZoneBreakpoint = createServerFn({ method: 'POST' })
-  .validator(z.object({
+  .inputValidator(z.object({
     zone: z.string(),
     maxQuarterlyAccessCost: z.number(),
   }))
@@ -76,9 +76,9 @@ export const getApprovalRules = createServerFn({ method: 'GET' })
   })
 
 export const updateApprovalRule = createServerFn({ method: 'POST' })
-  .validator(z.object({
+  .inputValidator(z.object({
     id: z.number(),
-    updates: z.record(z.string(), z.any()),
+    updates: z.record(z.string(), z.union([z.number(), z.string(), z.null()])),
   }))
   .handler(async ({ data }) => {
     await db.update(approvalRules).set(data.updates).where(eq(approvalRules.id, data.id))
@@ -109,17 +109,18 @@ export const getEquipmentCosts = createServerFn({ method: 'GET' })
 // ── Audit Log ──
 
 export const getAuditLog = createServerFn({ method: 'GET' })
-  .validator(z.object({
+  .inputValidator(z.object({
     tableName: z.string().optional(),
-    limit: z.number().default(50),
-  }).optional())
+    limit: z.number().optional(),
+  }))
   .handler(async ({ data }) => {
     const filters = data ?? {}
+    const limit = filters.limit ?? 50
     const query = db.select().from(auditLog)
     if (filters.tableName) {
       return query.where(eq(auditLog.tableName, filters.tableName))
         .orderBy(auditLog.timestamp)
-        .limit(filters.limit)
+        .limit(limit)
     }
-    return query.orderBy(auditLog.timestamp).limit(filters.limit)
+    return query.orderBy(auditLog.timestamp).limit(limit)
   })

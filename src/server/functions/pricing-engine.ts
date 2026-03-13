@@ -1,10 +1,20 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { db } from '../db'
-import { products, globalConfig, zoneBreakpoints } from '../db/schema'
+import { products, globalConfig, zoneBreakpoints, equipmentCosts } from '../db/schema'
 import { eq, and, lte, gte } from 'drizzle-orm'
 
 // ── Input validation ──
+
+const AddonSelectionInput = z.object({
+  productId: z.number(),
+  quantity: z.number().min(1).default(1),
+})
+
+const HardwareSelectionInput = z.object({
+  hardwareId: z.number(),
+  quantity: z.number().min(1).default(1),
+})
 
 export const SiteLineInput = z.object({
   country: z.string().default('SE'),
@@ -17,6 +27,8 @@ export const SiteLineInput = z.object({
   contractLengthMonths: z.number().min(1).max(60).default(36),
   isRenewal: z.boolean().default(false),
   quantity: z.number().min(1).default(1),
+  addons: z.array(AddonSelectionInput).optional(),
+  hardware: z.array(HardwareSelectionInput).optional(),
 })
 
 export type SiteLineInputType = z.infer<typeof SiteLineInput>
@@ -108,7 +120,7 @@ function calculateDepreciation(totalCapex: number, ratePerMonth: number, months:
 // ── Main Pricing Calculation ──
 
 export const calculateSitePrice = createServerFn({ method: 'POST' })
-  .validator(SiteLineInput)
+  .inputValidator(SiteLineInput)
   .handler(async ({ data }) => {
     // 1. Find the product
     let product
@@ -210,15 +222,105 @@ export const calculateSitePrice = createServerFn({ method: 'POST' })
       }
     }
 
-    // 9. Payback
+    // 9. Addon calculations
+    const addonBreakdown: Array<{
+      productId: number
+      displayName: string
+      quantity: number
+      priceOneTime: number
+      priceMonthly: number
+      costOneTime: number
+      costMonthly: number
+      capex: number
+    }> = []
+
+    let addonRevenueOT = 0, addonRevenueMo = 0
+    let addonCogsOT = 0, addonCogsMo = 0
+    let addonCapex = 0, addonOpexOT = 0, addonNetworkMo = 0
+
+    if (data.addons && data.addons.length > 0) {
+      for (const addonInput of data.addons) {
+        const addonProduct = await db.select().from(products)
+          .where(eq(products.id, addonInput.productId)).get()
+        if (!addonProduct) continue
+
+        const aqty = addonInput.quantity ?? 1
+        const aRevenueOT = aqty * roundUpTo10(addonProduct.listPriceOneTime ?? 0)
+        const aRevenueMo = aqty * roundUpTo10(addonProduct.listPriceMonthly ?? 0)
+        const aCogsOT = aqty * (addonProduct.cogsOneTime ?? 0)
+        const aCogsMo = aqty * (addonProduct.cogsAnnual ?? 0) / 12
+        const aCpeCapex = (addonProduct.cpeCapex ?? 0) * capexAdjustment
+        const aSiteCapex = (addonProduct.siteCapex ?? 0) * capexAdjustment
+        const aCapex = aqty * (aCpeCapex + aSiteCapex)
+
+        addonRevenueOT += aRevenueOT
+        addonRevenueMo += aRevenueMo
+        addonCogsOT += aCogsOT
+        addonCogsMo += aCogsMo
+        addonCapex += aCapex
+        addonOpexOT += aqty * (addonProduct.opexOneTime ?? 0)
+        addonNetworkMo += aqty * ((addonProduct.backboneCostAnnual ?? 0) + (addonProduct.gtCostAnnual ?? 0)) / 12
+
+        addonBreakdown.push({
+          productId: addonProduct.id,
+          displayName: addonProduct.displayName,
+          quantity: aqty,
+          priceOneTime: aRevenueOT,
+          priceMonthly: aRevenueMo,
+          costOneTime: aCogsOT,
+          costMonthly: aCogsMo,
+          capex: aCapex,
+        })
+      }
+    }
+
+    // 10. Hardware calculations
+    const hardwareBreakdown: Array<{
+      hardwareId: number
+      description: string
+      quantity: number
+      capex: number
+    }> = []
+
+    let totalHardwareCapex = 0
+
+    if (data.hardware && data.hardware.length > 0) {
+      for (const hwInput of data.hardware) {
+        const hw = await db.select().from(equipmentCosts)
+          .where(eq(equipmentCosts.id, hwInput.hardwareId)).get()
+        if (!hw) continue
+
+        const hqty = hwInput.quantity ?? 1
+        const hwCapex = hqty * hw.netPriceSek
+
+        totalHardwareCapex += hwCapex
+        hardwareBreakdown.push({
+          hardwareId: hw.id,
+          description: hw.description,
+          quantity: hqty,
+          capex: hwCapex,
+        })
+      }
+    }
+
+    // 11. Combined totals (main + addons + hardware)
+    const combinedRevenueOT = revenueOneTime + addonRevenueOT
+    const combinedRevenueMo = revenueMonthly + addonRevenueMo
+    const combinedCogsOT = cogsOneTime + addonCogsOT
+    const combinedCogsMo = cogsMonthly + addonCogsMo
+    const combinedCapex = totalCapex + addonCapex + totalHardwareCapex
+    const combinedOpexOT = opexOneTime + addonOpexOT
+    const combinedNetworkMo = networkCostMonthly + addonNetworkMo
+
+    // 12. Payback (uses combined totals)
     const payback = calculatePayback(
-      revenueOneTime,
-      revenueMonthly,
-      cogsOneTime,
-      cogsMonthly,
-      totalCapex,
-      opexOneTime,
-      networkCostMonthly,
+      combinedRevenueOT,
+      combinedRevenueMo,
+      combinedCogsOT,
+      combinedCogsMo,
+      combinedCapex,
+      combinedOpexOT,
+      combinedNetworkMo,
       data.contractLengthMonths,
     )
 
@@ -232,7 +334,7 @@ export const calculateSitePrice = createServerFn({ method: 'POST' })
         finalOneTime,
         finalMonthly,
       },
-      // P&L breakdown
+      // P&L breakdown (main product only)
       pnl: {
         revenueOneTime,
         revenueMonthly,
@@ -248,6 +350,17 @@ export const calculateSitePrice = createServerFn({ method: 'POST' })
         contributionMargin2: cm2,
         contributionMargin2Pct: cm2Pct,
       },
+      // Combined P&L (main + addons + hardware)
+      combinedPnl: {
+        revenueOneTime: combinedRevenueOT,
+        revenueMonthly: combinedRevenueMo,
+        cogsOneTime: combinedCogsOT,
+        cogsMonthly: combinedCogsMo,
+        totalCapex: combinedCapex,
+        hardwareCapex: totalHardwareCapex,
+      },
+      addonBreakdown,
+      hardwareBreakdown,
       payback,
       zone,
       product: {
@@ -261,7 +374,7 @@ export const calculateSitePrice = createServerFn({ method: 'POST' })
 // ── Approval Check ──
 
 export const checkApproval = createServerFn({ method: 'POST' })
-  .validator(z.object({
+  .inputValidator(z.object({
     paybackMonths: z.number().nullable(),
     contributionMargin2Pct: z.number(),
     totalContractValueMsek: z.number(),

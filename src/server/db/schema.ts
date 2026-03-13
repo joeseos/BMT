@@ -144,6 +144,34 @@ export const accessBreakpoints = sqliteTable('access_breakpoints', {
 })
 
 // ═══════════════════════════════════════════════
+// PRODUCT RELATIONS (Addons & Hardware links)
+// ═══════════════════════════════════════════════
+
+export const productAddons = sqliteTable('product_addons', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  mainProductId: integer('main_product_id').notNull().references(() => products.id, { onDelete: 'cascade' }),
+  addonProductId: integer('addon_product_id').notNull().references(() => products.id, { onDelete: 'cascade' }),
+  isDefault: integer('is_default', { mode: 'boolean' }).default(false),
+  displayOrder: integer('display_order').default(0),
+}, (table) => [
+  index('idx_product_addons_main').on(table.mainProductId),
+  index('idx_product_addons_addon').on(table.addonProductId),
+])
+
+export const productHardware = sqliteTable('product_hardware', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  productId: integer('product_id').notNull().references(() => products.id, { onDelete: 'cascade' }),
+  hardwareId: integer('hardware_id').notNull().references(() => equipmentCosts.id, { onDelete: 'cascade' }),
+  quantity: integer('quantity').default(1),
+  isDefault: integer('is_default', { mode: 'boolean' }).default(false),
+  isRequired: integer('is_required', { mode: 'boolean' }).default(false),
+  displayOrder: integer('display_order').default(0),
+}, (table) => [
+  index('idx_product_hardware_product').on(table.productId),
+  index('idx_product_hardware_hw').on(table.hardwareId),
+])
+
+// ═══════════════════════════════════════════════
 // DEALS & PRICING
 // ═══════════════════════════════════════════════
 
@@ -220,6 +248,21 @@ export const dealLines = sqliteTable('deal_lines', {
   index('idx_deal_lines_deal_id').on(table.dealId),
 ])
 
+export const dealLineAddons = sqliteTable('deal_line_addons', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  dealLineId: integer('deal_line_id').notNull().references(() => dealLines.id, { onDelete: 'cascade' }),
+  type: text('type').notNull(), // "addon" | "hardware"
+  referenceId: integer('reference_id').notNull(), // product id or hardware id
+  quantity: integer('quantity').default(1),
+  priceOneTime: real('price_one_time').default(0),
+  priceMonthly: real('price_monthly').default(0),
+  costOneTime: real('cost_one_time').default(0),
+  costMonthly: real('cost_monthly').default(0),
+  capex: real('capex').default(0),
+}, (table) => [
+  index('idx_deal_line_addons_line').on(table.dealLineId),
+])
+
 export const dealAdditionalCosts = sqliteTable('deal_additional_costs', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   dealId: integer('deal_id').references(() => deals.id, { onDelete: 'cascade' }),
@@ -280,3 +323,17 @@ export const priceListVersions = sqliteTable('price_list_versions', {
   notes: text('notes'),
   createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
 })
+
+// ── Inferred Types ──
+export type Product = typeof products.$inferSelect
+export type ProductInsert = typeof products.$inferInsert
+export type ProductFamily = typeof productFamilies.$inferSelect
+export type EquipmentCost = typeof equipmentCosts.$inferSelect
+export type EquipmentCostInsert = typeof equipmentCosts.$inferInsert
+export type ProductAddon = typeof productAddons.$inferSelect
+export type ProductHardwareLink = typeof productHardware.$inferSelect
+export type Deal = typeof deals.$inferSelect
+export type DealLine = typeof dealLines.$inferSelect
+export type DealLineAddon = typeof dealLineAddons.$inferSelect
+export type ApprovalRule = typeof approvalRules.$inferSelect
+export type ApprovalLogEntry = typeof approvalLog.$inferSelect

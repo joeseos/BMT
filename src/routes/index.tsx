@@ -67,7 +67,7 @@ function Dashboard() {
               {deals.slice(0, 10).map((deal) => (
                 <tr key={deal.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3">
-                    <Link to={`/deals/${deal.id}`} className="text-blue-600 hover:text-blue-800 font-medium text-sm">
+                    <Link to="/deals/$dealId" params={{ dealId: String(deal.id) }} className="text-blue-600 hover:text-blue-800 font-medium text-sm">
                       {deal.customerName}
                     </Link>
                   </td>
