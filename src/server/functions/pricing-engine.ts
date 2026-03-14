@@ -84,24 +84,24 @@ function calculatePayback(
   networkCost: number,
   contractMonths: number,
 ): PaybackResult {
-  const initialNet = revenueOT - cogsOT - capex - opexOT
+  // Total upfront investment to recover from recurring margin.
+  // One-time revenue is income — not subtracted here, since payback measures
+  // how many months of monthly cashflow cover the capital outlay.
+  const investment = cogsOT + capex + opexOT
   const monthlyNet = revenueMo - cogsMo - networkCost
 
-  if (monthlyNet > 0 && initialNet >= 0) {
-    return { months: 0, status: 'profitable', label: '0 mån' }
-  }
-  if (monthlyNet > 0 && initialNet < 0) {
-    const months = Math.ceil(1 - initialNet / monthlyNet)
-    if (months > contractMonths) {
-      return { months, status: 'exceeds_contract', label: `${months} mån (> avtal)` }
-    }
-    return { months, status: 'profitable', label: `${months} mån` }
-  }
-  if (monthlyNet <= 0 && initialNet < 0) {
+  if (monthlyNet <= 0) {
     return { months: null, status: 'unprofitable', label: 'Olönsam' }
   }
-  // monthlyNet < 0, initialNet > 0 — eventually unprofitable
-  return { months: null, status: 'unprofitable', label: 'Negativt löpande' }
+  if (investment <= 0) {
+    return { months: 0, status: 'profitable', label: '0 mån' }
+  }
+
+  const months = Math.ceil(investment / monthlyNet)
+  if (months > contractMonths) {
+    return { months, status: 'exceeds_contract', label: `${months} mån (> avtal)` }
+  }
+  return { months, status: 'profitable', label: `${months} mån` }
 }
 
 // ── Depreciation (PMT equivalent) ──

@@ -181,7 +181,7 @@ function AdminProducts() {
               let productId: number
               if (editingProduct) {
                 const { id, ...rest } = formData as Record<string, string | number | boolean | null | undefined>
-                const updates = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined))
+                const updates = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined)) as Record<string, string | number | boolean | null>
                 await updateProduct({ data: { id: editingProduct.id, updates } })
                 productId = editingProduct.id
 
