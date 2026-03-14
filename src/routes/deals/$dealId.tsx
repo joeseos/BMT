@@ -1,6 +1,7 @@
-import { createFileRoute, Link, useRouter } from '@tanstack/react-router'
-import { useState } from 'react'
-import { getDeal, addDealLine, deleteDealLine } from '~/server/functions/deals'
+import { createFileRoute, useRouter } from '@tanstack/react-router'
+import { useState, useRef } from 'react'
+import * as XLSX from 'xlsx'
+import { getDeal, addDealLine, addDealAddresses, assignProductToLines, deleteDealLine } from '~/server/functions/deals'
 import { getProducts, getProductWithRelations } from '~/server/functions/products'
 import { calculateSitePrice } from '~/server/functions/pricing-engine'
 import { formatSEK, formatPercent, getStatusColor, getPaybackColor } from '~/lib/pricing-types'
@@ -15,15 +16,47 @@ export const Route = createFileRoute('/deals/$dealId')({
   },
 })
 
+type ModalState = 'none' | 'addAddress' | 'importAddresses' | 'assignProduct'
+
 function DealDetail() {
   const { deal, lines, totalPnl, approvals } = Route.useLoaderData()
   const router = useRouter()
-  const [showAddLine, setShowAddLine] = useState(false)
+  const [modal, setModal] = useState<ModalState>('none')
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
 
   const totalRevenueMonthly = totalPnl.revenueMonthly
   const totalCogsMonthly = totalPnl.cogsMonthly
   const cm1 = totalRevenueMonthly - totalCogsMonthly
   const cm1Pct = totalRevenueMonthly > 0 ? cm1 / totalRevenueMonthly : 0
+  const ebit = cm1 - totalPnl.networkCost
+  const ebitPct = totalRevenueMonthly > 0 ? ebit / totalRevenueMonthly : 0
+
+  function toggleSelect(id: number) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleSelectAll() {
+    if (selectedIds.size === lines.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(lines.map((l) => l.id)))
+    }
+  }
+
+  function closeModal() {
+    setModal('none')
+  }
+
+  function onSaved() {
+    closeModal()
+    setSelectedIds(new Set())
+    router.invalidate()
+  }
 
   return (
     <div>
@@ -44,13 +77,16 @@ function DealDetail() {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => setShowAddLine(true)}
+            onClick={() => setModal('addAddress')}
             className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
           >
-            + Add Site
+            + Add Address
           </button>
-          <button className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50">
-            Export
+          <button
+            onClick={() => setModal('importAddresses')}
+            className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50"
+          >
+            Import Addresses
           </button>
         </div>
       </div>
@@ -58,7 +94,7 @@ function DealDetail() {
       {/* P&L Summary */}
       <div className="bg-white rounded-lg border border-gray-200 p-5 mb-6">
         <h2 className="text-sm font-semibold text-gray-900 uppercase tracking-wide mb-4">Deal P&L Summary</h2>
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-9 gap-4">
           <PnlCard label="Revenue (OT)" value={formatSEK(totalPnl.revenueOneTime)} />
           <PnlCard label="Revenue (Monthly)" value={formatSEK(totalRevenueMonthly)} />
           <PnlCard label="COGS (OT)" value={formatSEK(totalPnl.cogsOneTime)} negative />
@@ -66,35 +102,48 @@ function DealDetail() {
           <PnlCard label="CAPEX" value={formatSEK(totalPnl.capex)} negative />
           <PnlCard label="TB1" value={formatSEK(cm1)} highlight />
           <PnlCard label="TB1 %" value={formatPercent(cm1Pct)} highlight />
+          <PnlCard label="EBIT" value={formatSEK(ebit)} highlight />
+          <PnlCard label="EBIT %" value={formatPercent(ebitPct)} highlight />
         </div>
       </div>
 
-      {/* Site Lines Table */}
+      {/* Addresses Table */}
       <div className="bg-white rounded-lg border border-gray-200 overflow-hidden mb-6">
-        <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
+        <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-gray-900">
-            Site Lines ({lines.length})
+            Addresses ({lines.length})
           </h2>
         </div>
 
         {lines.length === 0 ? (
           <div className="text-center py-8">
-            <p className="text-gray-500 text-sm mb-2">No site lines yet.</p>
+            <p className="text-gray-500 text-sm mb-2">No addresses yet.</p>
             <button
-              onClick={() => setShowAddLine(true)}
+              onClick={() => setModal('addAddress')}
               className="text-blue-600 hover:text-blue-800 text-sm font-medium"
             >
-              + Add first site
+              + Add first address
             </button>
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Site</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Service</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Capacity</th>
+                  <th className="px-3 py-2 w-8">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.size === lines.length && lines.length > 0}
+                      onChange={toggleSelectAll}
+                      className="rounded"
+                    />
+                  </th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Address</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">City</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Zip</th>
+                  <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Cost OT</th>
+                  <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Cost/Qtr</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Product</th>
                   <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Price OT</th>
                   <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">Price/mån</th>
                   <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Zone</th>
@@ -109,20 +158,34 @@ function DealDetail() {
                     ? ((line.revenueMonthly ?? 0) - (line.cogsMonthly ?? 0)) / (line.revenueMonthly ?? 0)
                     : 0
                   const addons = line.lineAddons?.filter((a: DealLineAddon) => a.type === 'addon') ?? []
-                  const hwItems = line.lineAddons?.filter((a: DealLineAddon) => a.type === 'hardware') ?? []
+                  const isSelected = selectedIds.has(line.id)
+                  const hasProduct = !!line.productId
 
                   return (
                     <>
-                      <tr key={line.id} className="hover:bg-gray-50">
-                        <td className="px-3 py-2 text-sm">
-                          <div className="font-medium text-gray-900">{line.city || line.address || `Site ${line.id}`}</div>
-                          <div className="text-gray-500 text-xs">{line.country} · Qty {line.quantity}</div>
+                      <tr key={line.id} className={`hover:bg-gray-50 ${isSelected ? 'bg-blue-50/40' : ''} ${!hasProduct ? 'bg-amber-50/30' : ''}`}>
+                        <td className="px-3 py-2">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleSelect(line.id)}
+                            className="rounded"
+                          />
                         </td>
-                        <td className="px-3 py-2 text-sm text-gray-700">{line.serviceName || '—'}</td>
-                        <td className="px-3 py-2 text-sm text-gray-700">{line.capacity ? `${line.capacity} Mbit` : '—'}</td>
-                        <td className="px-3 py-2 text-sm text-right font-mono">{formatSEK(line.finalPriceOneTime ?? 0)}</td>
-                        <td className="px-3 py-2 text-sm text-right font-mono">{formatSEK(line.finalPriceMonthly ?? 0)}</td>
-                        <td className="px-3 py-2 text-sm text-gray-600">{line.zone || '—'}</td>
+                        <td className="px-3 py-2 text-gray-900 font-medium whitespace-nowrap">{line.address || '—'}</td>
+                        <td className="px-3 py-2 text-gray-700 whitespace-nowrap">{line.city || '—'}</td>
+                        <td className="px-3 py-2 text-gray-600">{line.zipCode || '—'}</td>
+                        <td className="px-3 py-2 text-right font-mono text-gray-700">{line.accessCostOneTime ? formatSEK(line.accessCostOneTime) : '—'}</td>
+                        <td className="px-3 py-2 text-right font-mono text-gray-700">{line.accessCostQuarterly ? formatSEK(line.accessCostQuarterly) : '—'}</td>
+                        <td className="px-3 py-2">
+                          {hasProduct
+                            ? <span className="text-gray-800">{line.serviceName || '—'}</span>
+                            : <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-amber-100 text-amber-700">Unassigned</span>
+                          }
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono">{hasProduct ? formatSEK(line.finalPriceOneTime ?? 0) : '—'}</td>
+                        <td className="px-3 py-2 text-right font-mono">{hasProduct ? formatSEK(line.finalPriceMonthly ?? 0) : '—'}</td>
+                        <td className="px-3 py-2 text-gray-600">{line.zone || '—'}</td>
                         <td className="px-3 py-2">
                           {line.paybackStatus && (
                             <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getPaybackColor(line.paybackStatus as any)}`}>
@@ -130,11 +193,11 @@ function DealDetail() {
                             </span>
                           )}
                         </td>
-                        <td className="px-3 py-2 text-sm text-right font-mono">{formatPercent(lineCm1Pct)}</td>
+                        <td className="px-3 py-2 text-right font-mono">{hasProduct ? formatPercent(lineCm1Pct) : '—'}</td>
                         <td className="px-3 py-2">
                           <button
                             onClick={async () => {
-                              if (confirm('Delete this line?')) {
+                              if (confirm('Delete this address?')) {
                                 await deleteDealLine({ data: { id: line.id } })
                                 router.invalidate()
                               }
@@ -145,30 +208,17 @@ function DealDetail() {
                           </button>
                         </td>
                       </tr>
-                      {/* Sub-items: addons */}
                       {addons.map((addon: DealLineAddon) => (
                         <tr key={`addon-${addon.id}`} className="bg-blue-50/30">
+                          <td className="px-3 py-1" />
                           <td className="px-3 py-1 text-xs text-gray-500 pl-8" colSpan={2}>
                             <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-xs mr-1">Addon</span>
                             #{addon.referenceId} x{addon.quantity}
                           </td>
-                          <td className="px-3 py-1 text-xs text-right font-mono" colSpan={1}></td>
+                          <td colSpan={3} />
                           <td className="px-3 py-1 text-xs text-right font-mono">{formatSEK(addon.priceOneTime ?? 0)}</td>
                           <td className="px-3 py-1 text-xs text-right font-mono">{formatSEK(addon.priceMonthly ?? 0)}</td>
-                          <td colSpan={4}></td>
-                        </tr>
-                      ))}
-                      {/* Sub-items: hardware */}
-                      {hwItems.map((hw: DealLineAddon) => (
-                        <tr key={`hw-${hw.id}`} className="bg-green-50/30">
-                          <td className="px-3 py-1 text-xs text-gray-500 pl-8" colSpan={2}>
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-green-100 text-green-700 text-xs mr-1">HW</span>
-                            #{hw.referenceId} x{hw.quantity}
-                          </td>
-                          <td className="px-3 py-1 text-xs text-right font-mono" colSpan={1}></td>
-                          <td className="px-3 py-1 text-xs text-right font-mono" colSpan={2}></td>
-                          <td className="px-3 py-1 text-xs text-right font-mono" colSpan={1}>CAPEX: {formatSEK(hw.capex ?? 0)}</td>
-                          <td colSpan={3}></td>
+                          <td colSpan={5} />
                         </tr>
                       ))}
                     </>
@@ -204,28 +254,309 @@ function DealDetail() {
         </div>
       )}
 
-      {/* Add Line Modal */}
-      {showAddLine && (
-        <AddLineModal
+      {/* Selection action bar */}
+      {selectedIds.size > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-lg px-6 py-3 flex items-center justify-between z-40">
+          <span className="text-sm text-gray-700 font-medium">
+            {selectedIds.size} address{selectedIds.size > 1 ? 'es' : ''} selected
+          </span>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50"
+            >
+              Deselect all
+            </button>
+            <button
+              onClick={() => setModal('assignProduct')}
+              className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
+            >
+              Add Product
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modals */}
+      {modal === 'addAddress' && (
+        <AddAddressModal
           dealId={deal.id}
+          onClose={closeModal}
+          onSaved={onSaved}
+        />
+      )}
+      {modal === 'importAddresses' && (
+        <ImportAddressesModal
+          dealId={deal.id}
+          onClose={closeModal}
+          onSaved={onSaved}
+        />
+      )}
+      {modal === 'assignProduct' && (
+        <AssignProductModal
+          dealId={deal.id}
+          dealLineIds={Array.from(selectedIds)}
           contractLengthMonths={deal.contractLengthMonths}
-          onClose={() => setShowAddLine(false)}
-          onSaved={() => { setShowAddLine(false); router.invalidate() }}
+          onClose={closeModal}
+          onSaved={onSaved}
         />
       )}
     </div>
   )
 }
 
-// ── Add Line Modal with Addon/Hardware Selection ──
+// ── Add Address Modal ──
 
-function AddLineModal({
+function AddAddressModal({
   dealId,
+  onClose,
+  onSaved,
+}: {
+  dealId: number
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [form, setForm] = useState({
+    address: '',
+    city: '',
+    zipCode: '',
+    country: 'SE',
+    accessCostOneTime: 0,
+    accessCostQuarterly: 0,
+  })
+  const [saving, setSaving] = useState(false)
+
+  async function handleSave() {
+    setSaving(true)
+    try {
+      await addDealLine({
+        data: {
+          dealId,
+          address: form.address,
+          city: form.city,
+          zipCode: form.zipCode,
+          country: form.country,
+          accessCostOneTime: form.accessCostOneTime,
+          accessCostQuarterly: form.accessCostQuarterly,
+        },
+      })
+      onSaved()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl p-6 w-full max-w-md mx-4">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold text-gray-900">Add Address</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+        </div>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="col-span-2">
+              <label className="block text-xs text-gray-500 mb-1">Address</label>
+              <input type="text" value={form.address} onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm" placeholder="Street address" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">City</label>
+              <input type="text" value={form.city} onChange={(e) => setForm((f) => ({ ...f, city: e.target.value }))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Zip Code</label>
+              <input type="text" value={form.zipCode} onChange={(e) => setForm((f) => ({ ...f, zipCode: e.target.value }))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Country</label>
+              <input type="text" value={form.country} onChange={(e) => setForm((f) => ({ ...f, country: e.target.value }))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Access Cost OT</label>
+              <input type="number" value={form.accessCostOneTime} onChange={(e) => setForm((f) => ({ ...f, accessCostOneTime: Number(e.target.value) }))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Access Cost Quarterly</label>
+              <input type="number" value={form.accessCostQuarterly} onChange={(e) => setForm((f) => ({ ...f, accessCostQuarterly: Number(e.target.value) }))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm" />
+            </div>
+          </div>
+        </div>
+        <div className="flex justify-end gap-3 mt-5 pt-4 border-t border-gray-200">
+          <button onClick={onClose} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-300">Cancel</button>
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+            {saving ? 'Saving...' : 'Add Address'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Import Addresses Modal ──
+
+type ParsedAddress = {
+  address: string
+  city: string
+  zipCode: string
+  country: string
+  accessCostOneTime: number
+  accessCostQuarterly: number
+  capacity?: number
+}
+
+function ImportAddressesModal({
+  dealId,
+  onClose,
+  onSaved,
+}: {
+  dealId: number
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [rows, setRows] = useState<ParsedAddress[]>([])
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  function parseFile(file: File) {
+    setError('')
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer)
+        const wb = XLSX.read(data, { type: 'array' })
+        const sheet = wb.Sheets[wb.SheetNames[0]]
+        const raw: Record<string, any>[] = XLSX.utils.sheet_to_json(sheet, { defval: '' })
+
+        const parsed: ParsedAddress[] = raw.map((r) => {
+          const gatunamn = String(r['Gatunamn'] ?? '')
+          const gatunr = String(r['Gatunr'] ?? '')
+          const swedishAddress = [gatunamn, gatunr].filter(Boolean).join(' ')
+          const rawCapacity = Number(r['Kapacitet'] ?? 0)
+          return {
+            address: swedishAddress || String(r['Address'] ?? r['address'] ?? ''),
+            city: String(r['Ort'] ?? r['City'] ?? r['city'] ?? ''),
+            zipCode: String(r['Postnr'] ?? r['Zip Code'] ?? r['zip_code'] ?? r['ZipCode'] ?? r['zipCode'] ?? ''),
+            country: String(r['Country'] ?? r['country'] ?? 'SE') || 'SE',
+            accessCostOneTime: Number(r['Installationskostnad'] ?? r['Access Cost OT'] ?? r['access_cost_ot'] ?? 0) || 0,
+            accessCostQuarterly: Number(r['Kvartalskostnad'] ?? r['Access Cost Quarterly'] ?? r['access_cost_quarterly'] ?? 0) || 0,
+            capacity: rawCapacity || undefined,
+          }
+        })
+
+        if (parsed.length === 0) {
+          setError('No rows found. Make sure the file has data rows.')
+        } else {
+          setRows(parsed)
+        }
+      } catch {
+        setError('Failed to parse file. Make sure it is a valid .xlsx or .xls file.')
+      }
+    }
+    reader.readAsArrayBuffer(file)
+  }
+
+  async function handleImport() {
+    setSaving(true)
+    try {
+      await addDealAddresses({ data: { dealId, addresses: rows } })
+      onSaved()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl p-6 w-full max-w-3xl mx-4 max-h-[85vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold text-gray-900">Import Addresses</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+        </div>
+
+        {rows.length === 0 ? (
+          <div>
+            <p className="text-sm text-gray-600 mb-3">
+              Upload an Excel file (.xlsx or .xls). Expected columns:
+            </p>
+            <ul className="text-sm text-gray-500 list-disc list-inside mb-4 space-y-0.5">
+              <li><code>Gatunamn</code> + <code>Gatunr</code> (or <code>Address</code>)</li>
+              <li><code>Ort</code> (or <code>City</code>)</li>
+              <li><code>Postnr</code> (or <code>Zip Code</code>)</li>
+              <li><code>Kapacitet</code> — bandwidth in Mbit (optional)</li>
+              <li><code>Installationskostnad</code> (or <code>Access Cost OT</code>)</li>
+              <li><code>Kvartalskostnad</code> (or <code>Access Cost Quarterly</code>)</li>
+              <li><code>Country</code> (optional, defaults to SE)</li>
+            </ul>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".xlsx,.xls"
+              className="hidden"
+              onChange={(e) => { if (e.target.files?.[0]) parseFile(e.target.files[0]) }}
+            />
+            {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
+            <button
+              onClick={() => fileRef.current?.click()}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
+            >
+              Choose File
+            </button>
+          </div>
+        ) : (
+          <div>
+            <p className="text-sm text-gray-600 mb-3">{rows.length} addresses parsed. Review before importing:</p>
+            <div className="overflow-x-auto border border-gray-200 rounded mb-4">
+              <table className="min-w-full text-sm divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    {['Address', 'City', 'Zip', 'Country', 'Capacity', 'Cost OT', 'Cost/Qtr'].map((h) => (
+                      <th key={h} className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {rows.map((row, i) => (
+                    <tr key={i} className="hover:bg-gray-50">
+                      <td className="px-3 py-1.5 text-gray-800">{row.address || '—'}</td>
+                      <td className="px-3 py-1.5 text-gray-700">{row.city || '—'}</td>
+                      <td className="px-3 py-1.5 text-gray-600">{row.zipCode || '—'}</td>
+                      <td className="px-3 py-1.5 text-gray-600">{row.country}</td>
+                      <td className="px-3 py-1.5 font-mono text-gray-600">{row.capacity ? `${row.capacity} Mbit` : '—'}</td>
+                      <td className="px-3 py-1.5 font-mono text-gray-700">{row.accessCostOneTime ? formatSEK(row.accessCostOneTime) : '—'}</td>
+                      <td className="px-3 py-1.5 font-mono text-gray-700">{row.accessCostQuarterly ? formatSEK(row.accessCostQuarterly) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex justify-between items-center">
+              <button onClick={() => setRows([])} className="text-sm text-gray-500 hover:text-gray-700">Choose different file</button>
+              <div className="flex gap-2">
+                <button onClick={onClose} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-300">Cancel</button>
+                <button onClick={handleImport} disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                  {saving ? 'Importing...' : `Import ${rows.length} Addresses`}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Assign Product Modal ──
+
+function AssignProductModal({
+  dealId,
+  dealLineIds,
   contractLengthMonths,
   onClose,
   onSaved,
 }: {
   dealId: number
+  dealLineIds: number[]
   contractLengthMonths: number
   onClose: () => void
   onSaved: () => void
@@ -237,20 +568,11 @@ function AddLineModal({
   const [selectedAddons, setSelectedAddons] = useState<Map<number, number>>(new Map())
   const [selectedHardware, setSelectedHardware] = useState<Map<number, number>>(new Map())
   const [selectedSpeed, setSelectedSpeed] = useState<number | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [lineForm, setLineForm] = useState({
-    address: '',
-    city: '',
-    country: 'SE',
-    quantity: 1,
-    accessCostOneTime: 0,
-    accessCostQuarterly: 0,
-    discountOneTime: 0,
-    discountMonthly: 0,
-    isRenewal: false,
-  })
+  const [discountOneTime, setDiscountOneTime] = useState(0)
+  const [discountMonthly, setDiscountMonthly] = useState(0)
+  const [isRenewal, setIsRenewal] = useState(false)
+  const [saving, setSaving] = useState(false)
 
-  // Load products on mount
   useState(() => {
     getProducts({ data: { activeOnly: true, isAddonService: false } }).then(setAllProducts)
   })
@@ -262,7 +584,6 @@ function AddLineModal({
     const relations = await getProductWithRelations({ data: { id: productId } })
     setProductRelations(relations)
 
-    // Pre-select defaults
     const defaultAddons = new Map<number, number>()
     for (const a of relations.addons) {
       if (a.isDefault) defaultAddons.set(a.addonProductId, 1)
@@ -274,87 +595,34 @@ function AddLineModal({
       if (h.isDefault || h.isRequired) defaultHw.set(h.hardwareId, h.quantity ?? 1)
     }
     setSelectedHardware(defaultHw)
-
     setStep('addons')
   }
 
   async function handleSave() {
     if (!selectedProductId) return
-    setLoading(true)
-
+    setSaving(true)
     try {
-      // Calculate pricing
-      const addonsArray = Array.from(selectedAddons.entries()).map(([productId, quantity]) => ({ productId, quantity }))
-      const hardwareArray = Array.from(selectedHardware.entries()).map(([hardwareId, quantity]) => ({ hardwareId, quantity }))
-
-      const pricing = await calculateSitePrice({
-        data: {
-          productId: selectedProductId,
-          country: lineForm.country,
-          accessCostOneTime: lineForm.accessCostOneTime,
-          accessCostQuarterly: lineForm.accessCostQuarterly,
-          discountOneTime: lineForm.discountOneTime,
-          discountMonthly: lineForm.discountMonthly,
-          contractLengthMonths: contractLengthMonths,
-          isRenewal: lineForm.isRenewal,
-          quantity: lineForm.quantity,
-          addons: addonsArray,
-          hardware: hardwareArray,
-        },
-      })
-
-      // Build lineAddons array for deal storage
-      const lineAddons: { type: 'addon' | 'hardware'; referenceId: number; quantity: number; priceOneTime: number; priceMonthly: number; costOneTime: number; costMonthly: number; capex: number }[] = []
-      for (const ab of pricing.addonBreakdown) {
-        lineAddons.push({
-          type: 'addon' as const,
-          referenceId: ab.productId,
-          quantity: ab.quantity,
-          priceOneTime: ab.priceOneTime,
-          priceMonthly: ab.priceMonthly,
-          costOneTime: ab.costOneTime,
-          costMonthly: ab.costMonthly,
-          capex: ab.capex,
-        })
-      }
-      for (const hb of pricing.hardwareBreakdown) {
-        lineAddons.push({
-          type: 'hardware' as const,
-          referenceId: hb.hardwareId,
-          quantity: hb.quantity,
-          priceOneTime: 0,
-          priceMonthly: 0,
-          costOneTime: 0,
-          costMonthly: 0,
-          capex: hb.capex,
-        })
-      }
-
       const product = allProducts.find((p) => p.id === selectedProductId)
+      const addonsArray = Array.from(selectedAddons.entries()).map(([productId, quantity]) => ({ type: 'addon' as const, referenceId: productId, quantity }))
+      const hardwareArray = Array.from(selectedHardware.entries()).map(([hardwareId, quantity]) => ({ type: 'hardware' as const, referenceId: hardwareId, quantity }))
 
-      await addDealLine({
+      await assignProductToLines({
         data: {
-          dealId,
-          address: lineForm.address,
-          city: lineForm.city,
-          country: lineForm.country,
+          dealLineIds,
+          contractLengthMonths,
           productId: selectedProductId,
           serviceName: product?.displayName,
           capacity: product?.hasBandwidth ? (selectedSpeed ?? undefined) : undefined,
           accessType: product?.accessType ?? undefined,
-          quantity: lineForm.quantity,
-          accessCostOneTime: lineForm.accessCostOneTime,
-          accessCostQuarterly: lineForm.accessCostQuarterly,
-          discountOneTime: lineForm.discountOneTime,
-          discountMonthly: lineForm.discountMonthly,
-          isRenewal: lineForm.isRenewal,
-          lineAddons,
+          discountOneTime,
+          discountMonthly,
+          isRenewal,
+          lineAddons: [...addonsArray, ...hardwareArray],
         },
       })
-
       onSaved()
     } finally {
-      setLoading(false)
+      setSaving(false)
     }
   }
 
@@ -362,46 +630,33 @@ function AddLineModal({
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div className="bg-white rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[85vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-gray-900">Add Site Line</h2>
+          <h2 className="text-lg font-bold text-gray-900">
+            Add Product to {dealLineIds.length} address{dealLineIds.length > 1 ? 'es' : ''}
+          </h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
         </div>
 
         {step === 'product' ? (
           <div className="space-y-4">
-            {/* Site details */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <div>
-                <label className="block text-xs text-gray-500 mb-1">Address</label>
-                <input type="text" value={lineForm.address} onChange={(e) => setLineForm((f) => ({ ...f, address: e.target.value }))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm" />
+                <label className="block text-xs text-gray-500 mb-1">Discount OT (%)</label>
+                <input type="number" value={discountOneTime} onChange={(e) => setDiscountOneTime(Number(e.target.value))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm" />
               </div>
               <div>
-                <label className="block text-xs text-gray-500 mb-1">City</label>
-                <input type="text" value={lineForm.city} onChange={(e) => setLineForm((f) => ({ ...f, city: e.target.value }))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm" />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Access Cost OT</label>
-                <input type="number" value={lineForm.accessCostOneTime} onChange={(e) => setLineForm((f) => ({ ...f, accessCostOneTime: Number(e.target.value) }))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm" />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Access Cost Quarterly</label>
-                <input type="number" value={lineForm.accessCostQuarterly} onChange={(e) => setLineForm((f) => ({ ...f, accessCostQuarterly: Number(e.target.value) }))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm" />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Quantity</label>
-                <input type="number" value={lineForm.quantity} min={1} onChange={(e) => setLineForm((f) => ({ ...f, quantity: Number(e.target.value) }))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm" />
+                <label className="block text-xs text-gray-500 mb-1">Discount Monthly (%)</label>
+                <input type="number" value={discountMonthly} onChange={(e) => setDiscountMonthly(Number(e.target.value))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm" />
               </div>
               <div className="flex items-end">
-                <label className="flex items-center gap-2 text-sm pb-1">
-                  <input type="checkbox" checked={lineForm.isRenewal} onChange={(e) => setLineForm((f) => ({ ...f, isRenewal: e.target.checked }))} />
+                <label className="flex items-center gap-2 text-sm pb-1.5">
+                  <input type="checkbox" checked={isRenewal} onChange={(e) => setIsRenewal(e.target.checked)} />
                   Renewal
                 </label>
               </div>
             </div>
-
-            {/* Product selection */}
             <div>
               <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Select Product</label>
-              <div className="max-h-60 overflow-y-auto border border-gray-200 rounded">
+              <div className="max-h-72 overflow-y-auto border border-gray-200 rounded">
                 {allProducts.map((p) => (
                   <button
                     key={p.id}
@@ -420,12 +675,10 @@ function AddLineModal({
             <button onClick={() => setStep('product')} className="text-sm text-blue-600 hover:text-blue-800">
               &larr; Back to product selection
             </button>
-
             <p className="text-sm text-gray-700">
               Product: <span className="font-medium">{allProducts.find((p) => p.id === selectedProductId)?.displayName}</span>
             </p>
 
-            {/* Speed selector for bandwidth products */}
             {allProducts.find((p) => p.id === selectedProductId)?.hasBandwidth && (
               <div>
                 <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Speed (Mbit)</label>
@@ -442,14 +695,12 @@ function AddLineModal({
               </div>
             )}
 
-            {/* Addon selection */}
             {productRelations && productRelations.addons.length > 0 && (
               <div>
                 <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Available Addons</h3>
                 <div className="space-y-1">
                   {productRelations.addons.map((link: ProductAddon & { addon: Product | undefined }) => {
                     const isSelected = selectedAddons.has(link.addonProductId)
-                    const isRequired = false // Addons aren't required, just default
                     return (
                       <div key={link.id} className="flex items-center gap-3 bg-gray-50 rounded px-3 py-2 text-sm">
                         <input
@@ -483,7 +734,6 @@ function AddLineModal({
               </div>
             )}
 
-            {/* Hardware selection */}
             {productRelations && productRelations.hardware.length > 0 && (
               <div>
                 <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Hardware</h3>
@@ -531,15 +781,13 @@ function AddLineModal({
             )}
 
             <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
-              <button onClick={onClose} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-300">
-                Cancel
-              </button>
+              <button onClick={onClose} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-300">Cancel</button>
               <button
                 onClick={handleSave}
-                disabled={loading}
+                disabled={saving}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
               >
-                {loading ? 'Saving...' : 'Add Line'}
+                {saving ? 'Saving...' : `Assign to ${dealLineIds.length} address${dealLineIds.length > 1 ? 'es' : ''}`}
               </button>
             </div>
           </div>

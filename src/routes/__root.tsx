@@ -20,6 +20,11 @@ export const Route = createRootRoute({
     ],
   }),
   component: RootComponent,
+  notFoundComponent: () => (
+    <div className="text-center py-16">
+      <p className="text-2xl font-semibold text-gray-700">404 — Page not found</p>
+    </div>
+  ),
 })
 
 function RootComponent() {
