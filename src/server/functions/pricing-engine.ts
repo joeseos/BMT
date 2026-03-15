@@ -2,7 +2,7 @@ import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { db } from '../db'
 import { products, globalConfig, zoneBreakpoints, equipmentCosts } from '../db/schema'
-import { eq, and, lte, gte } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 
 // ── Input validation ──
 
@@ -56,14 +56,6 @@ async function getFxRate(country: string): Promise<number> {
 async function getConfigValue(key: string, fallback: number = 0): Promise<number> {
   const row = await db.select().from(globalConfig).where(eq(globalConfig.key, key)).get()
   return row?.value ?? fallback
-}
-
-function classifyZone(accessCostQuarterly: number, zoneType: number | null): string {
-  // Zone type determines which set of breakpoints to use
-  // Type 1: Z1, Z2, Z3 (xDSL/SDH ≤10M)
-  // Type 2: ZZ, ZA, ZB, ZC, ZD, ZE, ZF, ZG (Fiber ≥10M)
-  // We look up breakpoints ordered by displayOrder, find first zone where cost fits
-  return 'ZZ' // Will be resolved from DB at runtime
 }
 
 // ── Payback Calculator ──
@@ -149,8 +141,8 @@ export const calculateSitePrice = createServerFn({ method: 'POST' })
     const diffAnnual = accessAnnual - breakpointAnnual
 
     // 4. Customer price calculation
-    let priceOneTime = product.listPriceOneTime ?? 0
-    let priceMonthly = product.listPriceMonthly ?? 0
+    let priceOneTime: number
+    let priceMonthly: number
 
     if (diffOneTime > 0) {
       priceOneTime = roundUpTo10((product.listPriceOneTime ?? 0) + diffOneTime)
