@@ -2,7 +2,7 @@ import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { db } from '../db'
 import { products, productFamilies, productAddons, productHardware, equipmentCosts, productCostParams, auditLog } from '../db/schema'
-import { eq, and, like, desc, SQL } from 'drizzle-orm'
+import { eq, and, like, SQL } from 'drizzle-orm'
 
 // ── List Products ──
 

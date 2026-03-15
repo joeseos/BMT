@@ -3,8 +3,8 @@ import { useState, useRef } from 'react'
 import * as XLSX from 'xlsx'
 import { getDeal, addDealLine, addDealAddresses, assignProductToLines, deleteDealLine } from '~/server/functions/deals'
 import { getProducts, getProductWithRelations } from '~/server/functions/products'
-import { calculateSitePrice } from '~/server/functions/pricing-engine'
 import { formatSEK, formatPercent, getStatusColor, getPaybackColor } from '~/lib/pricing-types'
+import type { DealStatus, PaybackStatus } from '~/lib/pricing-types'
 import { AVAILABLE_SPEEDS } from '~/server/db/schema'
 import type { Product, DealLineAddon, ProductAddon, ProductHardwareLink, EquipmentCost } from '~/server/db/schema'
 
@@ -65,7 +65,7 @@ function DealDetail() {
         <div>
           <div className="flex items-center gap-3 mb-1">
             <h1 className="text-2xl font-bold text-gray-900">{deal.customerName}</h1>
-            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(deal.status as any ?? 'draft')}`}>
+            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(((deal.status ?? 'draft') as DealStatus))}`}>
               {deal.status?.replace('_', ' ') || 'draft'}
             </span>
           </div>
@@ -188,7 +188,7 @@ function DealDetail() {
                         <td className="px-3 py-2 text-gray-600">{line.zone || '—'}</td>
                         <td className="px-3 py-2">
                           {line.paybackStatus && (
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getPaybackColor(line.paybackStatus as any)}`}>
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getPaybackColor(line.paybackStatus as PaybackStatus)}`}>
                               {line.paybackMonths !== null ? `${line.paybackMonths} mån` : line.paybackStatus}
                             </span>
                           )}
@@ -426,7 +426,7 @@ function ImportAddressesModal({
         const data = new Uint8Array(e.target?.result as ArrayBuffer)
         const wb = XLSX.read(data, { type: 'array' })
         const sheet = wb.Sheets[wb.SheetNames[0]]
-        const raw: Record<string, any>[] = XLSX.utils.sheet_to_json(sheet, { defval: '' })
+        const raw: Record<string, unknown>[] = XLSX.utils.sheet_to_json(sheet, { defval: '' })
 
         const parsed: ParsedAddress[] = raw.map((r) => {
           const gatunamn = String(r['Gatunamn'] ?? '')
@@ -549,7 +549,7 @@ function ImportAddressesModal({
 // ── Assign Product Modal ──
 
 function AssignProductModal({
-  dealId,
+  dealId: _dealId,
   dealLineIds,
   contractLengthMonths,
   onClose,

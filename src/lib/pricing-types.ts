@@ -1,5 +1,3 @@
-import { z } from 'zod'
-
 // ── Product categories ──
 export const productCategories = [
   'internet_connect',

@@ -5,7 +5,7 @@ import {
   getHardwareCatalog, createHardware, updateHardware, deleteHardware,
   getProductWithRelations, linkAddonToProduct, unlinkAddonFromProduct,
   linkHardwareToProduct, unlinkHardwareFromProduct,
-  getProductCostParams, saveProductCostParams,
+  saveProductCostParams,
 } from '~/server/functions/products'
 import { AVAILABLE_SPEEDS } from '~/server/db/schema'
 import type { Product, ProductFamily, EquipmentCost, ProductAddon, ProductHardwareLink, ProductCostParam } from '~/server/db/schema'
@@ -180,7 +180,7 @@ function AdminProducts() {
             try {
               let productId: number
               if (editingProduct) {
-                const { id, ...rest } = formData as Record<string, string | number | boolean | null | undefined>
+                const { id: _id, ...rest } = formData as Record<string, string | number | boolean | null | undefined>
                 const updates = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined)) as Record<string, string | number | boolean | null>
                 await updateProduct({ data: { id: editingProduct.id, updates } })
                 productId = editingProduct.id
@@ -239,7 +239,7 @@ function AdminProducts() {
           onClose={() => { setShowHardwareForm(false); setEditingHardware(null) }}
           onSave={async (formData) => {
             if (editingHardware) {
-              const { id, ...rest } = formData as Record<string, string | number | null>
+              const { id: _id, ...rest } = formData as Record<string, string | number | null>
               await updateHardware({ data: { id: editingHardware.id, updates: rest } })
             } else {
               await createHardware({ data: formData as Parameters<typeof createHardware>[0]['data'] })
